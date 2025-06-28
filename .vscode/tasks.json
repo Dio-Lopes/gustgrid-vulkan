@@ -51,7 +51,8 @@
                 "-B",
                 "${workspaceFolder}/build",
                 "-G",
-                "Ninja"
+                "Ninja",
+                "-DCMAKE_CXX_STANDARD=17"
             ],
             "group": "build",
             "problemMatcher": [],

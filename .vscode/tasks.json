@@ -2,7 +2,7 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "CMake Configure",
+            "label": "CMake Configure (Windows)",
             "type": "shell",
             "command": "cmake",
             "args": [
@@ -15,14 +15,16 @@
                 "-A",
                 "x64"
             ],
-            "group": {
-                "kind": "build",
-                "isDefault": true
+            "group": "build",
+            "problemMatcher": [],
+            "windows": {
+                "presentation": {
+                    "reveal": "always"
+                }
             },
-            "problemMatcher": []
         },
         {
-            "label": "CMake Build",
+            "label": "CMake Build (Windows)",
             "type": "shell",
             "command": "cmake",
             "args": [
@@ -31,24 +33,69 @@
                 "--config",
                 "Release"
             ],
-            "group": {
-                "kind": "build",
-                "isDefault": false
+            "group": "build",
+            "problemMatcher": [],
+            "windows": {
+                "presentation": {
+                    "reveal": "always"
+                }
             },
+        },
+        {
+            "label": "CMake Configure (macOS)",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "-S",
+                "${workspaceFolder}",
+                "-B",
+                "${workspaceFolder}/build",
+                "-G",
+                "Ninja"
+            ],
+            "group": "build",
+            "problemMatcher": [],
+            "osx": {
+                "presentation": {
+                    "reveal": "always",
+                }
+            },
+        },
+        {
+            "label": "CMake Build (macOS)",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "--build",
+                "${workspaceFolder}/build"
+            ],
+            "group": "build",
+            "problemMatcher": [],
+            "osx": {
+                "presentation": {
+                    "reveal": "always"
+                }
+            },
+        },
+        {
+            "label": "Configure and Build (Windows)",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "CMake Configure (Windows)",
+                "CMake Build (Windows)"
+            ],
+            "group": "build",
             "problemMatcher": []
         },
         {
-            "label": "Configure and Build",
+            "label": "Configure and Build (macOS)",
+            "dependsOrder": "sequence",
             "dependsOn": [
-                "CMake Configure",
-                "CMake Build"
+                "CMake Configure (macOS)",
+                "CMake Build (macOS)"
             ],
-            "type": "shell",
-            "group": {
-                "kind": "build",
-                "isDefault": false
-            },
+            "group": "build",
             "problemMatcher": []
-        }
+        },
     ]
 }

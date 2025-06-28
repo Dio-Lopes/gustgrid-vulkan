@@ -8,9 +8,34 @@
             "program": "${workspaceFolder}/bin/Release/GustGridVulkan.exe",
             "args": [],
             "cwd": "${workspaceFolder}",
-            "preLaunchTask": "Configure and Build",
+            "preLaunchTask": "Configure and Build (Windows)",
             "console": "internalConsole",
             "stopAtEntry": false,
+            "windows": {
+                "MIMode": "gdb",
+                "miDebuggerPath": "gdb"
+            }
+        },
+        {
+            "name": "macOS Release",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/bin/GustGridVulkan",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Configure and Build (macOS)",
+            "stopAtEntry": false,
+            "environment": [
+                {
+                    "name": "DYLD_LIBRARY_PATH",
+                    "value": "${workspaceFolder}/bin/lib:/usr/local/lib"
+                }
+            ],
+            "externalConsole": false,
+            "MIMode": "lldb",
+            "osx": {
+                "MIMode": "lldb"
+            }
         }
     ]
 }

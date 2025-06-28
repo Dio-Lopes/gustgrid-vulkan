@@ -2,10 +2,18 @@
 (WIP)
 A C++/Vulkan port of GustGrid, a tool for real-time PC airflow and thermal simulation
 
-
+Windows:
 Download and install Vulkan SDK from https://vulkan.lunarg.com/sdk/home
 Download and install Visual Studio 17 2022 from https://visualstudio.microsoft.com/downloads/ and get the C++ tools.
 
+MacOS:
+Xcode Command Line Tools
+Homebrew
+```bash
+brew install molten-vk glfw glm ninja cmake
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+export DYLD_LIBRARY_PATH="/usr/local/lib:/opt/homebrew/lib:$DYLD_LIBRARY_PATH"
+```
 
 * "(FREE) Gaming Pc" (https://skfb.ly/oGSTB) by Moonway 3D is licensed under Creative Commons Attribution (http://creativecommons.org/licenses/by/4.0/).
 * "AM4 Cpu [ Free ]" (https://skfb.ly/pqx6R) by Igor.Jop is licensed under Creative Commons Attribution (http://creativecommons.org/licenses/by/4.0/).

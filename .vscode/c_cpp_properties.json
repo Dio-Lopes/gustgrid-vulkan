@@ -18,6 +18,33 @@
             "intelliSenseMode": "windows-msvc-x64",
             "configurationProvider": "ms-vscode.cmake-tools",
             "compileCommands": "${workspaceFolder}/build/compile_commands.json"
+        },
+        {
+            "name": "macOS",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/usr/local/include",
+                "/usr/local/include/vulkan",
+                "/opt/homebrew/include",
+                "/opt/homebrew/include/vulkan",
+                "${VK_SDK_PATH}/Include"
+            ],
+            "defines": [
+                "_DEBUG",
+                "__APPLE__",
+                "VK_USE_PLATFORM_MACOS_MVK",
+                "VULKAN_HPP_NO_EXCEPTIONS"
+            ],
+            "compilerPath": "/usr/bin/clang++",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "macos-clang-x64",
+            "configurationProvider": "ms-vscode.cmake-tools",
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+            "macFrameworkPath": [
+                "/System/Library/Frameworks",
+                "/Library/Frameworks"
+            ]
         }
     ],
     "version": 4

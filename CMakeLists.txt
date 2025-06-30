@@ -32,14 +32,8 @@ link_directories(${CMAKE_SOURCE_DIR}/include)
 
 set(SOURCES
     src/main.cpp
-    src/shaders/main.vert
-    src/shaders/main.frag
-    src/shaders/ui.vert
-    src/shaders/ui.frag
-    src/shaders/volume.vert
-    src/shaders/volume.frag
-    src/shaders/tempreader.glsl
-    src/shaders/text.frag
+    src/shaders/compiled/testtriangle.vert.spv
+    src/shaders/compiled/testtriangle.frag.spv
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES})

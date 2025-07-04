@@ -100,9 +100,9 @@ struct UniformBufferObject {
     glm::vec3 cameraPos;
 };
 struct ModelData{
+    std::string name;
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
-    UniformBufferObject ubo;
     VkBuffer vertexBuffer;
     VkDeviceMemory vertexBufferMemory;
     VkBuffer indexBuffer;
@@ -111,8 +111,17 @@ struct ModelData{
     VkImageView textureImageView[4];
     VkDeviceMemory textureImageMemory[4];
     std::vector<VkDescriptorSet> descriptorSets;
+    std::vector<VkBuffer> uniformBuffers;
+    std::vector<VkDeviceMemory> uniformBuffersMemory;
+    std::vector<void*> uniformBuffersMapped;
+    glm::mat4 modelMatrix = glm::mat4(1.0f);
     bool enabled = true;
     bool loaded = false;
+};
+struct ModelOrientation {
+    glm::vec3 position = glm::vec3(0.0f);
+    glm::vec3 rotation = glm::vec3(0.0f);
+    glm::vec3 scale = glm::vec3(1.0f);
 };
 
 class GustGrid {
@@ -148,23 +157,37 @@ private:
     std::vector<VkFence> inFlightFences;
     VkDescriptorSetLayout descriptorSetLayout;
     VkDescriptorPool descriptorPool;
-    std::vector<VkBuffer> uniformBuffers;
-    std::vector<VkDeviceMemory> uniformBuffersMemory;
-    std::vector<void*> uniformBuffersMapped;
     VkSampler textureSampler;
     VkImage depthImage;
     VkDeviceMemory depthImageMemory;
     VkImageView depthImageView;
+    bool gpuEnabled = true;
+    bool cpuFanEnabled = true;
+    bool frontFanEnabled = true;
+    bool topFanEnabled = true;
+    float backFanLocations[3] = {0.0f, -2.5f, 1.0f};
     std::map<std::string, ModelData> models = {
         {"case", {}},
         {"shield", {}},
         {"ram", {}},
         {"cpu", {}},
-        {"gpu", {}},
+        {"gpu", {enabled: gpuEnabled}},
         {"ioshield", {}},
         {"motherboard", {}},
         {"psu", {}},
-        {"glass", {}}
+        {"glass", {}},
+        {"cpufan", {enabled: cpuFanEnabled}},
+        {"frontfan", {enabled: frontFanEnabled}},
+        {"topfan", {enabled: topFanEnabled}},
+        {"fancpu", {enabled: cpuFanEnabled}},
+        {"fanfront", {enabled: frontFanEnabled}},
+        {"fantop", {enabled: topFanEnabled}},
+        {"backfan1", {}},
+        {"backfan2", {}},
+        {"backfan3", {}},
+        {"fanback1", {}},
+        {"fanback2", {}},
+        {"fanback3", {}}
     };
     float camRadius = 15.0f;
     float camPitch = PI / 12.0f;
@@ -175,7 +198,13 @@ private:
         cos(camYaw) * camRadius
     );
     float camFOV = 45.0f;
+    bool firstMouse = true;
+    float lastMouseX = WIDTH / 2.0f;
+    float lastMouseY = HEIGHT / 2.0f;
+    float mouseSensitivity = 0.007f;
     bool framebufferResized = false;
+    float currentTime = 0.0f;
+    float fanStrength = 10.0f;
 
     void initWindow(){
         glfwInit();
@@ -183,6 +212,7 @@ private:
         window = glfwCreateWindow(WIDTH, HEIGHT, "GustGrid", nullptr, nullptr);
         glfwSetWindowUserPointer(window, this);
         glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+        glfwSetCursorPosCallback(window, mouseCallback);
     }
     void initVulkan(){
         createInstance();
@@ -231,17 +261,19 @@ private:
                 vkDestroyImage(device, model.second.textureImage[i], nullptr);
                 vkFreeMemory(device, model.second.textureImageMemory[i], nullptr);
             }
+            for(size_t i=0; i<MAX_FRAMES_IN_FLIGHT; i++){
+                vkDestroyBuffer(device, model.second.uniformBuffers[i], nullptr);
+                vkFreeMemory(device, model.second.uniformBuffersMemory[i], nullptr);
+            }
         }
-        vkDestroyPipeline(device, graphicsPipeline, nullptr);
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        vkDestroyRenderPass(device, renderPass, nullptr);
-        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-            vkDestroyBuffer(device, uniformBuffers[i], nullptr);
-            vkFreeMemory(device, uniformBuffersMemory[i], nullptr);
+        for(size_t i=0; i<MAX_FRAMES_IN_FLIGHT; i++){
             vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
             vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
             vkDestroyFence(device, inFlightFences[i], nullptr);
         }
+        vkDestroyPipeline(device, graphicsPipeline, nullptr);
+        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
         vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
         vkDestroyCommandPool(device, commandPool, nullptr);
         vkDestroyDevice(device, nullptr);
@@ -302,6 +334,7 @@ private:
             throw std::runtime_error("Failed to acquire swap chain image!");
         vkResetFences(device, 1, &inFlightFences[currentFrame]);
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);
+        currentTime = glfwGetTime();
         recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
         updateUniformBuffer(currentFrame);
         VkSubmitInfo submitInfo{};
@@ -336,16 +369,18 @@ private:
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
     void updateUniformBuffer(uint32_t currentImage){
-        static auto startTime = std::chrono::high_resolution_clock::now();
-        auto currentTime = std::chrono::high_resolution_clock::now();
-        float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
-        UniformBufferObject ubo{};
-        ubo.model = glm::mat4(1.0f);
-        ubo.view = glm::lookAt(camPos, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-        ubo.proj = glm::perspective(glm::radians(camFOV), (float) swapChainExtent.width / (float) swapChainExtent.height, 0.1f, 100.0f);
-        ubo.proj[1][1] *= -1;
-        ubo.cameraPos = camPos;
-        memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
+        glm::mat4 view = glm::lookAt(camPos, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::mat4 proj = glm::perspective(glm::radians(camFOV), (float) swapChainExtent.width / (float) swapChainExtent.height, 0.1f, 100.0f);
+        proj[1][1] *= -1;
+        for(auto &model : models){
+            if(!model.second.loaded) continue;
+            UniformBufferObject ubo{};
+            ubo.model = model.second.modelMatrix;
+            ubo.view = view;
+            ubo.proj = proj;
+            ubo.cameraPos = camPos;
+            memcpy(model.second.uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
+        }
     }
     void createSyncObjects(){
         imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
@@ -669,11 +704,22 @@ private:
         return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
     }
     void createTextureImage(){
+        VkFormat textureFormats[] = {VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
+        std::string pathNames[] = {"/basecolor.png", "/metallic.png", "/roughness.png", "/normal.png"};
         for(auto &model : models){
-            std::string pathNames[] = {"/basecolor.png", "/metallic.png", "/roughness.png", "/normal.png"};
             for(size_t i=0; i<4; i++){
                 int texWidth, texHeight, texChannels;
-                std::string texturePath = "src/textures/" + model.first + pathNames[i];
+                std::string texturePath;
+                if(model.first == "cpufan" || model.first == "frontfan" || model.first == "topfan" || model.first == "fancpu" || model.first == "fanfront" || model.first == "fantop" || model.first == "backfan1" || model.first == "backfan2" || model.first == "backfan3" || model.first == "fanback1" || model.first == "fanback2" || model.first == "fanback3"){
+                    texturePath = "src/textures/case" + pathNames[i];
+                    if(model.first == "cpufan" || model.first == "frontfan" || model.first == "topfan") model.second.name = model.first;
+                    else if(model.first == "backfan1" || model.first == "backfan2" || model.first == "backfan3") model.second.name = "backfan";
+                    else model.second.name = "fan";
+                }
+                else{
+                    model.second.name = model.first;
+                    texturePath = "src/textures/" + model.first + pathNames[i];
+                }
                 stbi_uc* pixels = stbi_load(texturePath.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
                 VkDeviceSize imageSize = texWidth * texHeight * 4;
                 if(!pixels) throw std::runtime_error("Failed to load texture image!");
@@ -687,10 +733,10 @@ private:
                 memcpy(data, pixels, (size_t) imageSize);
                 vkUnmapMemory(device, stagingBufferMemory);
                 stbi_image_free(pixels);
-                createImage(texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
-                transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                createImage(texWidth, texHeight, textureFormats[i], VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
+                transitionImageLayout(textureImage, textureFormats[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
                 copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
-                transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                transitionImageLayout(textureImage, textureFormats[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 vkDestroyBuffer(device, stagingBuffer, nullptr);
                 vkFreeMemory(device, stagingBufferMemory, nullptr);
                 model.second.textureImage[i] = textureImage;
@@ -700,7 +746,8 @@ private:
         }
     }
     void createTextureImageView(){
-        for(auto &model : models) for(size_t i=0; i<4; i++) model.second.textureImageView[i] = createImageView(model.second.textureImage[i], VK_FORMAT_R8G8B8A8_SRGB);
+        VkFormat textureFormats[] = {VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
+        for(auto &model : models) for(size_t i=0; i<4; i++) model.second.textureImageView[i] = createImageView(model.second.textureImage[i], textureFormats[i]);
     }
     VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT){
         VkImageViewCreateInfo viewInfo{};
@@ -874,7 +921,7 @@ private:
     void loadModel(){
         for(auto &model : models){
             if(!model.second.loaded) continue;
-            std::string file = "src/models/" + model.first + ".obj";
+            std::string file = "src/models/" + model.second.name + ".obj";
             ModelData data;
             objl::Loader loader;
             if(!loader.LoadFile(file.c_str())){
@@ -920,12 +967,15 @@ private:
     }
     void createUniformBuffers(){
         VkDeviceSize bufferSize = sizeof(UniformBufferObject);
-        uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
-        uniformBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT);
-        uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
-        for(size_t i=0; i<MAX_FRAMES_IN_FLIGHT; i++){
-            createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uniformBuffers[i], uniformBuffersMemory[i]);
-            vkMapMemory(device, uniformBuffersMemory[i], 0, bufferSize, 0, &uniformBuffersMapped[i]);
+        for(auto &model : models){
+            if(!model.second.loaded) continue;
+            model.second.uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+            model.second.uniformBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT);
+            model.second.uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
+            for(size_t i=0; i<MAX_FRAMES_IN_FLIGHT; i++){
+                createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, model.second.uniformBuffers[i], model.second.uniformBuffersMemory[i]);
+                vkMapMemory(device, model.second.uniformBuffersMemory[i], 0, bufferSize, 0, &model.second.uniformBuffersMapped[i]);
+            }
         }
     }
     void createDescriptorPool(){
@@ -958,7 +1008,7 @@ private:
                 throw std::runtime_error("Failed to allocate descriptor sets!");
             for(size_t i=0; i<MAX_FRAMES_IN_FLIGHT; i++){
                 VkDescriptorBufferInfo bufferInfo{};
-                bufferInfo.buffer = uniformBuffers[i];
+                bufferInfo.buffer = model.second.uniformBuffers[i];
                 bufferInfo.offset = 0;
                 bufferInfo.range = sizeof(UniformBufferObject);
                 std::array<VkDescriptorImageInfo, 4> imageInfos{};
@@ -1072,9 +1122,44 @@ private:
         scissor.extent = swapChainExtent;
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
         VkDeviceSize offsets[] = {0};
+        std::map<std::string, ModelOrientation> orientations = {
+            {"fancpu", {
+                position: glm::vec3(0.112314f, 2.302f, 0.894292f),
+                rotation: glm::vec3(0.0f, 0.0f, currentTime * fanStrength),
+                scale: glm::vec3(0.63f, 0.63f, 1.0f)
+            }},
+            {"fantop", {
+                position: glm::vec3(-0.18513f, 4.0492f, 1.5371f),
+                rotation: glm::vec3(-PI / 2.0f, 0.0f, currentTime * fanStrength)
+            }},
+            {"fanfront", {
+                position: glm::vec3(0.48427, 2.60047, 3.42548),
+                rotation: glm::vec3(0.0f, 0.0f, currentTime * fanStrength)
+            }},
+        };
         for(auto &model : models){
             if(!model.second.loaded || !model.second.enabled) continue;
             if(model.first == "glass" || model.first == "shield") continue;
+            if(model.first.substr(0, 7) == "fanback"){
+                int i = std::stoi(model.first.substr(7, 1)) - 1;
+                if(backFanLocations[i] > 0.0f) continue;
+                model.second.modelMatrix = glm::mat4(1.0f);
+                model.second.modelMatrix = glm::translate(model.second.modelMatrix, glm::vec3(0.0f, 2.36343f + backFanLocations[i], -3.36426));
+                model.second.modelMatrix = glm::rotate(model.second.modelMatrix, currentTime * fanStrength, glm::vec3(0.0f, 0.0f, 1.0f));
+            } else if(model.first.substr(0, 7) == "backfan"){
+                int i = std::stoi(model.first.substr(7, 1)) - 1;
+                if(backFanLocations[i] > 0.0f) continue;
+                model.second.modelMatrix = glm::mat4(1.0f);
+                model.second.modelMatrix = glm::translate(model.second.modelMatrix, glm::vec3(0.0f, backFanLocations[i], 0.0f));
+            } else if(model.second.name == "fan"){
+                ModelOrientation &orientation = orientations[model.first];
+                model.second.modelMatrix = glm::mat4(1.0f);
+                model.second.modelMatrix = glm::translate(model.second.modelMatrix, orientation.position);
+                model.second.modelMatrix = glm::scale(model.second.modelMatrix, orientation.scale);
+                model.second.modelMatrix = glm::rotate(model.second.modelMatrix, orientation.rotation.x, glm::vec3(1.0f, 0.0f, 0.0f));
+                model.second.modelMatrix = glm::rotate(model.second.modelMatrix, orientation.rotation.y, glm::vec3(0.0f, 1.0f, 0.0f));
+                model.second.modelMatrix = glm::rotate(model.second.modelMatrix, orientation.rotation.z, glm::vec3(0.0f, 0.0f, 1.0f));
+            }
             VkBuffer vertexBuffer = model.second.vertexBuffer;
             VkBuffer indexBuffer = model.second.indexBuffer;
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, offsets);
@@ -1333,6 +1418,35 @@ private:
             if(!layerFound) return false;
         }
         return true;
+    }
+    static void mouseCallback(GLFWwindow* window, double xpos, double ypos){
+        auto app = reinterpret_cast<GustGrid*>(glfwGetWindowUserPointer(window));
+        float xposFloat = static_cast<float>(xpos);
+        float yposFloat = static_cast<float>(ypos);
+        if(glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE){
+            app->lastMouseX = xposFloat;
+            app->lastMouseY = yposFloat;
+            app->firstMouse = true;
+            return;
+        }
+        if(app->firstMouse){
+            app->lastMouseX = xposFloat;
+            app->lastMouseY = yposFloat;
+            app->firstMouse = false;
+        }
+        float xOffset = (xposFloat - app->lastMouseX) * app->mouseSensitivity;
+        float yOffset = (app->lastMouseY - yposFloat) * app->mouseSensitivity;
+        app->lastMouseX = xposFloat;
+        app->lastMouseY = yposFloat;
+        app->camYaw += xOffset;
+        app->camPitch += yOffset;
+        if(app->camPitch > 1.6f) app->camPitch = 1.6f;
+        else if(app->camPitch < -1.6f) app->camPitch = -1.6f;
+        app->camPos = glm::vec3(
+            sin(app->camYaw) * app->camRadius,
+            sin(app->camPitch) * app->camRadius,
+            cos(app->camYaw) * app->camRadius
+        );
     }
     static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,

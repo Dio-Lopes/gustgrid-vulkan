@@ -14,6 +14,7 @@ layout(binding = 4) uniform sampler2D normalMap;
 layout(location = 0) out vec4 FragColor;
 
 vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
+    cosTheta = clamp(cosTheta, 0.0, 1.0);
     return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 float DistributionGGX(vec3 N, vec3 H, float roughness){
@@ -23,13 +24,13 @@ float DistributionGGX(vec3 N, vec3 H, float roughness){
     float NdotH2 = NdotH * NdotH;
     float denom = NdotH2 * (a2 - 1.0) + 1.0;
     denom = PI * denom * denom;
-    return a2 / denom;
+    return a2 / max(denom, 0.0001);
 }
 float GeometrySchlickGGX(float NdotV, float roughness){
     float r = roughness + 1.0;
     float k = (r * r) / 8.0;
     float denom = NdotV * (1.0 - k) + k;
-    return NdotV / denom;
+    return NdotV / max(denom, 0.0001);
 }
 float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness){
     float NdotL = max(dot(N, L), 0.0);
@@ -46,10 +47,17 @@ vec3 getNormalFromMap(){
     vec2 st2 = dFdy(texCoord);
     vec3 N = normalize(normalVec);
     vec3 T = normalize(Q1 * st2.t - Q2 * st1.t);
-    vec3 B = normalize(cross(N, T));
+    T = normalize(T - dot(T, N) * N);
+    vec3 B = cross(N, T);
     mat3 TBN = mat3(T, B, N);
-    vec3 normal = normalize(TBN * tangent);
-    return normal;
+    return normalize(TBN * tangent);
+}
+float specularAntiAliasing(vec3 normal, float roughness){
+    vec3 dndu = dFdx(normal);
+    vec3 dndv = dFdy(normal);
+    float variance = dot(dndu, dndu) + dot(dndv, dndv);
+    float kernelRoughness = min(2.0 * variance, 1.0);
+    return clamp(roughness + kernelRoughness, 0.0, 1.0);
 }
 void main(){
     vec4 baseColor = texture(albedoMap, texCoord);
@@ -63,7 +71,9 @@ void main(){
 
     vec3 N = getNormalFromMap();
     vec3 V = normalize(camPos - FragPos);
-    float roughness = max(texture(roughnessMap, texCoord).r, 0.05);
+    float baseRoughness = max(texture(roughnessMap, texCoord).r, 0.05);
+    float roughness = specularAntiAliasing(N, baseRoughness);
+    roughness = clamp(roughness, 0.05, 1.0);
     float dNdX = length(dFdx(N)),  dNdY = length(dFdy(N));
     float dVdX = length(dFdx(V)),  dVdY = length(dFdy(V));
     float sigma = max(max(dNdX, dNdY), max(dVdX, dVdY));

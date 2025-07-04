@@ -67,10 +67,51 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "GNU")
-    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra)
-elseif(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-    target_compile_options(${PROJECT_NAME} PRIVATE /W4)
+if(CMAKE_BUILD_TYPE STREQUAL "Release" OR NOT CMAKE_BUILD_TYPE)
+    message(STATUS "Building in Release mode")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+        target_compile_options(${PROJECT_NAME} PRIVATE 
+            -O3
+            -DNDEBUG
+            -funroll-loops
+            -fvectorize
+            -fslp-vectorize
+            -ffast-math
+            -march=native
+            -mtune=native
+            -flto
+            -fomit-frame-pointer
+            -finline-functions
+            -ftree-vectorize
+        )
+        set_target_properties(${PROJECT_NAME} PROPERTIES
+            INTERPROCEDURAL_OPTIMIZATION TRUE
+        )
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+        target_compile_options(${PROJECT_NAME} PRIVATE 
+            /O2
+            /Oi
+            /Ot
+            /Gy
+            /GL
+            /fp:fast
+            /DNDEBUG
+        )
+        set_target_properties(${PROJECT_NAME} PROPERTIES
+            INTERPROCEDURAL_OPTIMIZATION TRUE
+        )
+    endif()
+else()
+    message(STATUS "Building in Debug mode")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+        target_compile_options(${PROJECT_NAME} PRIVATE 
+            -Wall -Wextra -g -O0
+        )
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+        target_compile_options(${PROJECT_NAME} PRIVATE 
+            /W4 /Zi /Od
+        )
+    endif()
 endif()
 
 if(IS_MACOS)

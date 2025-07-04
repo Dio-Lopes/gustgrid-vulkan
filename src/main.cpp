@@ -7,7 +7,6 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
 #include <OBJ-Loader/Source/OBJ_Loader.h>
-#include <chrono>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -171,17 +170,17 @@ private:
         {"shield", {}},
         {"ram", {}},
         {"cpu", {}},
-        {"gpu", {enabled: gpuEnabled}},
+        {"gpu", {.enabled = gpuEnabled}},
         {"ioshield", {}},
         {"motherboard", {}},
         {"psu", {}},
         {"glass", {}},
-        {"cpufan", {enabled: cpuFanEnabled}},
-        {"frontfan", {enabled: frontFanEnabled}},
-        {"topfan", {enabled: topFanEnabled}},
-        {"fancpu", {enabled: cpuFanEnabled}},
-        {"fanfront", {enabled: frontFanEnabled}},
-        {"fantop", {enabled: topFanEnabled}},
+        {"cpufan", {.enabled = cpuFanEnabled}},
+        {"frontfan", {.enabled = frontFanEnabled}},
+        {"topfan", {.enabled = topFanEnabled}},
+        {"fancpu", {.enabled = cpuFanEnabled}},
+        {"fanfront", {.enabled = frontFanEnabled}},
+        {"fantop", {.enabled = topFanEnabled}},
         {"backfan1", {}},
         {"backfan2", {}},
         {"backfan3", {}},
@@ -205,6 +204,7 @@ private:
     bool framebufferResized = false;
     float currentTime = 0.0f;
     float fanStrength = 10.0f;
+    float dt = 0.0f;
 
     void initWindow(){
         glfwInit();
@@ -324,6 +324,7 @@ private:
             throw std::runtime_error("Failed to create window surface!");
     }
     void drawFrame(){
+        dt = glfwGetTime() - currentTime;
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
         uint32_t imageIndex;
         VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
@@ -1124,17 +1125,17 @@ private:
         VkDeviceSize offsets[] = {0};
         std::map<std::string, ModelOrientation> orientations = {
             {"fancpu", {
-                position: glm::vec3(0.112314f, 2.302f, 0.894292f),
-                rotation: glm::vec3(0.0f, 0.0f, currentTime * fanStrength),
-                scale: glm::vec3(0.63f, 0.63f, 1.0f)
+                .position = glm::vec3(0.112314f, 2.302f, 0.894292f),
+                .rotation = glm::vec3(0.0f, 0.0f, currentTime * fanStrength),
+                .scale = glm::vec3(0.63f, 0.63f, 1.0f)
             }},
             {"fantop", {
-                position: glm::vec3(-0.18513f, 4.0492f, 1.5371f),
-                rotation: glm::vec3(-PI / 2.0f, 0.0f, currentTime * fanStrength)
+                .position = glm::vec3(-0.18513f, 4.0492f, 1.5371f),
+                .rotation = glm::vec3(-PI / 2.0f, 0.0f, currentTime * fanStrength)
             }},
             {"fanfront", {
-                position: glm::vec3(0.48427, 2.60047, 3.42548),
-                rotation: glm::vec3(0.0f, 0.0f, currentTime * fanStrength)
+                .position = glm::vec3(0.48427, 2.60047, 3.42548),
+                .rotation = glm::vec3(0.0f, 0.0f, currentTime * fanStrength)
             }},
         };
         for(auto &model : models){

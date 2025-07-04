@@ -919,7 +919,7 @@ private:
             VkDeviceMemory indexBufferMemory;
             void* data;
             vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data);
-            if(model.indices.size() > 50000) {
+            if(model.indices.size() > 10000) {
                 #pragma omp parallel for
                 for(int v = 0; v < static_cast<int>(model.indices.size()); v++)
                     memcpy(static_cast<char*>(data) + v * sizeof(uint32_t), 
@@ -982,7 +982,7 @@ private:
             }
             void* data;
             vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data);
-            if(model.vertices.size() > 50000) {
+            if(model.vertices.size() > 10000) {
                 #pragma omp parallel for
                 for(int v = 0; v < static_cast<int>(model.vertices.size()); v++)
                     memcpy(static_cast<char*>(data) + v * sizeof(Vertex), 

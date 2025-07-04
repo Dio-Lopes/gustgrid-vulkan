@@ -32,8 +32,8 @@ link_directories(${CMAKE_SOURCE_DIR}/include)
 
 set(SOURCES
     src/main.cpp
-    src/shaders/compiled/testtriangle.vert.spv
-    src/shaders/compiled/testtriangle.frag.spv
+    src/shaders/compiled/main.vert.spv
+    src/shaders/compiled/main.frag.spv
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES})

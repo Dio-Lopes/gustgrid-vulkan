@@ -1,20 +1,17 @@
-#version 330 core
-in vec3 normalVec;
-in vec2 texCoord;
-in vec3 FragPos;
+#version 450
+layout(location = 0) in vec3 FragPos;
+layout(location = 1) in vec3 normalVec;
+layout(location = 2) in vec2 texCoord;
+layout(location = 3) in vec3 camPos;
 
 const float PI = 3.14159265358979323846;
 
-uniform vec3 camPos;
+layout(binding = 1) uniform sampler2D albedoMap;
+layout(binding = 2) uniform sampler2D metallicMap;
+layout(binding = 3) uniform sampler2D roughnessMap;
+layout(binding = 4) uniform sampler2D normalMap;
 
-uniform sampler2D albedoMap;
-uniform sampler2D metallicMap;
-uniform sampler2D roughnessMap;
-uniform sampler2D normalMap;
-uniform int isEmissive;
-uniform sampler2D emissionMap;
-
-out vec4 FragColor;
+layout(location = 0) out vec4 FragColor;
 
 vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
     return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
@@ -63,14 +60,6 @@ void main(){
 
     float mask = texture(metallicMap, texCoord).a;
     if (mask < 0.2) discard;
-
-    if(isEmissive == 1) {
-        vec3 emissiveColor = texture(emissionMap, texCoord).rgb;
-        if(length(emissiveColor) > 0.01){
-            FragColor = vec4(emissiveColor, 1.0);
-            return;
-        }
-    }
 
     vec3 N = getNormalFromMap();
     vec3 V = normalize(camPos - FragPos);

@@ -10,7 +10,7 @@ MacOS:
 Xcode Command Line Tools
 Homebrew
 ```bash
-brew install molten-vk glfw glm ninja cmake
+brew install molten-vk glfw glm ninja cmake libomp
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 export DYLD_LIBRARY_PATH="/usr/local/lib:/opt/homebrew/lib:$DYLD_LIBRARY_PATH"
 ```

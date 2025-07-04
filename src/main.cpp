@@ -7,6 +7,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
 #include <OBJ-Loader/Source/OBJ_Loader.h>
+#include <omp.h>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -900,23 +901,40 @@ private:
         vkBindBufferMemory(device, buffer, bufferMemory, 0);
     }
     void createIndexBuffer(){
-        for(auto &model : models){
-            VkDeviceSize bufferSize = sizeof(model.second.indices[0]) * model.second.indices.size();
+        std::vector<std::string> modelNames;
+        for(const auto &model : models) if(model.second.loaded) modelNames.push_back(model.first);
+        #pragma omp parallel for
+        for(int i = 0; i < static_cast<int>(modelNames.size()); i++){
+            const std::string& modelName = modelNames[i];
+            auto& model = models[modelName];
+            if(!model.loaded) continue;
+            VkDeviceSize bufferSize = sizeof(model.indices[0]) * model.indices.size();
             VkBuffer stagingBuffer;
             VkDeviceMemory stagingBufferMemory;
-            createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+            #pragma omp critical
+            {
+                createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+            }
             VkBuffer indexBuffer;
             VkDeviceMemory indexBufferMemory;
             void* data;
             vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data);
-            memcpy(data, model.second.indices.data(), (size_t) bufferSize);
+            if(model.indices.size() > 50000) {
+                #pragma omp parallel for
+                for(int v = 0; v < static_cast<int>(model.indices.size()); v++)
+                    memcpy(static_cast<char*>(data) + v * sizeof(uint32_t), 
+                        &model.indices[v], sizeof(uint32_t));
+            } else memcpy(data, model.indices.data(), (size_t) bufferSize);
             vkUnmapMemory(device, stagingBufferMemory);
-            createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, indexBuffer, indexBufferMemory);
-            copyBuffer(stagingBuffer, indexBuffer, bufferSize);
-            vkDestroyBuffer(device, stagingBuffer, nullptr);
-            vkFreeMemory(device, stagingBufferMemory, nullptr);
-            model.second.indexBuffer = indexBuffer;
-            model.second.indexBufferMemory = indexBufferMemory;
+            #pragma omp critical
+            {
+                createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, indexBuffer, indexBufferMemory);
+                copyBuffer(stagingBuffer, indexBuffer, bufferSize);
+                vkDestroyBuffer(device, stagingBuffer, nullptr);
+                vkFreeMemory(device, stagingBufferMemory, nullptr);
+            }
+            model.indexBuffer = indexBuffer;
+            model.indexBufferMemory = indexBufferMemory;
         }
     }
     void loadModel(){
@@ -931,9 +949,11 @@ private:
                 continue;
             }
             objl::Mesh mesh = loader.LoadedMeshes[0];
-            size_t vertexCount = mesh.Vertices.size();
+            int vertexCount = static_cast<int>(mesh.Vertices.size());
             data.vertices.resize(vertexCount);
-            for(size_t v=0; v<vertexCount; v++){
+            #pragma omp parallel for
+            for(int i=0; i<vertexCount; i++){
+                size_t v = static_cast<size_t>(i);
                 const auto &vertex = mesh.Vertices[v];
                 data.vertices[v].pos = glm::vec3(vertex.Position.X, vertex.Position.Y, vertex.Position.Z);
                 data.vertices[v].texCoord = glm::vec2(vertex.TextureCoordinate.X, vertex.TextureCoordinate.Y);
@@ -946,24 +966,40 @@ private:
         }
     }
     void createVertexBuffer(){
-        for(auto &model : models){
-            if(!model.second.loaded) continue;
-            VkDeviceSize bufferSize = sizeof(model.second.vertices[0]) * model.second.vertices.size();
+        std::vector<std::string> modelNames;
+        for(const auto &model : models) if(model.second.loaded) modelNames.push_back(model.first);
+        #pragma omp parallel for
+        for(int i = 0; i < static_cast<int>(modelNames.size()); i++){
+            const std::string& modelName = modelNames[i];
+            auto& model = models[modelName];
+            if(!model.loaded) continue;
+            VkDeviceSize bufferSize = sizeof(model.vertices[0]) * model.vertices.size();
             VkBuffer stagingBuffer;
             VkDeviceMemory stagingBufferMemory;
-            createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+            #pragma omp critical
+            {
+                createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+            }
             void* data;
             vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data);
-            memcpy(data, model.second.vertices.data(), (size_t) bufferSize);
+            if(model.vertices.size() > 50000) {
+                #pragma omp parallel for
+                for(int v = 0; v < static_cast<int>(model.vertices.size()); v++)
+                    memcpy(static_cast<char*>(data) + v * sizeof(Vertex), 
+                        &model.vertices[v], sizeof(Vertex));
+            } else memcpy(data, model.vertices.data(), (size_t) bufferSize);
             vkUnmapMemory(device, stagingBufferMemory);
             VkBuffer vertexBuffer;
             VkDeviceMemory vertexBufferMemory;
-            createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertexBuffer, vertexBufferMemory);
-            copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
-            vkDestroyBuffer(device, stagingBuffer, nullptr);
-            vkFreeMemory(device, stagingBufferMemory, nullptr);
-            model.second.vertexBuffer = vertexBuffer;
-            model.second.vertexBufferMemory = vertexBufferMemory;
+            #pragma omp critical
+            {
+                createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertexBuffer, vertexBufferMemory);
+                copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
+                vkDestroyBuffer(device, stagingBuffer, nullptr);
+                vkFreeMemory(device, stagingBufferMemory, nullptr);
+            }
+            model.vertexBuffer = vertexBuffer;
+            model.vertexBufferMemory = vertexBufferMemory;
         }
     }
     void createUniformBuffers(){

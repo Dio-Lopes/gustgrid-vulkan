@@ -1,12 +1,13 @@
-#version 330 core
-in vec2 TexCoords;
-out vec4 color;
-
-uniform sampler2D text;
-uniform vec3 textColor;
+#version 450
+layout (location = 0) in vec2 fragTexCoord;
+layout(binding = 0) uniform sampler2D fontTexture;
+layout(push_constant) uniform PushConstants {
+    vec3 textColor;
+} pc;
+layout (location = 0) out vec4 outColor;
 
 void main(){
-    float alpha = texture(text, TexCoords).r;
-    color = vec4(textColor, alpha);
+    float alpha = texture(fontTexture, fragTexCoord).r;
+    outColor = vec4(pc.textColor, alpha);
     if(alpha < 0.01) discard;
 }

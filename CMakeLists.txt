@@ -34,6 +34,8 @@ set(SOURCES
     src/main.cpp
     src/shaders/compiled/main.vert.spv
     src/shaders/compiled/main.frag.spv
+    src/shaders/compiled/ui.vert.spv
+    src/shaders/compiled/text.frag.spv
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES})
@@ -41,20 +43,46 @@ add_executable(${PROJECT_NAME} ${SOURCES})
 if(IS_MACOS)
     find_package(Vulkan REQUIRED)
     find_package(glfw3 REQUIRED)
+    find_package(Freetype REQUIRED)
     
     target_link_libraries(${PROJECT_NAME} 
         ${Vulkan_LIBRARIES} 
         glfw
+        ${FREETYPE_LIBRARIES}
         "-framework Cocoa"
         "-framework IOKit"
         "-framework CoreVideo"
+    )
+    target_include_directories(${PROJECT_NAME} PRIVATE
+        ${Vulkan_INCLUDE_DIRS} 
+        ${FREETYPE_INCLUDE_DIRS}
     )
     target_compile_definitions(${PROJECT_NAME} PRIVATE
         VULKAN_HPP_NO_EXCEPTIONS
     )
 else()
     find_library(Vulkan_LIBRARY vulkan-1 ${VK_SDK_PATH}/Lib)
-    target_link_libraries(${PROJECT_NAME} ${Vulkan_LIBRARY} glfw3_mt)
+    find_package(Freetype REQUIRED)
+    if(NOT FREETYPE_FOUND)
+        find_path(FREETYPE_INCLUDE_DIRS ft2build.h
+            PATHS
+                ${CMAKE_SOURCE_DIR}/include/freetype
+                ${CMAKE_SOURCE_DIR}/include
+                "C:/Program Files/freetype/include"
+                "C:/vcpkg/installed/x64-windows/include"
+        )
+        find_library(FREETYPE_LIBRARIES
+            NAMES freetype freetype.lib
+            PATHS
+                ${CMAKE_SOURCE_DIR}/lib
+                "C:/Program Files/freetype/lib"
+                "C:/vcpkg/installed/x64-windows/lib"
+        )
+    endif()
+    target_link_libraries(${PROJECT_NAME} ${Vulkan_LIBRARY} glfw3_mt ${FREETYPE_LIBRARIES})
+    target_include_directories(${PROJECT_NAME} PRIVATE
+        ${FREETYPE_INCLUDE_DIRS}
+    )
     target_compile_definitions(${PROJECT_NAME} PRIVATE
         WIN32
     )

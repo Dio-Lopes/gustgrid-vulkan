@@ -7,6 +7,8 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
 #include <OBJ-Loader/Source/OBJ_Loader.h>
+#include <freetype/include/ft2build.h>
+#include FT_FREETYPE_H
 #include <omp.h>
 #include <iostream>
 #include <stdexcept>
@@ -93,6 +95,29 @@ struct Vertex {
         return attributeDescriptions;
     }
 };
+struct TextVertex{
+    glm::vec2 pos;
+    glm::vec2 texCoord;
+    static VkVertexInputBindingDescription getBindingDescription(){
+        VkVertexInputBindingDescription bindingDescription{};
+        bindingDescription.binding = 0;
+        bindingDescription.stride = sizeof(TextVertex);
+        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        return bindingDescription;
+    }
+    static std::array<VkVertexInputAttributeDescription, 2> getAttributeDescriptions(){
+        std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+        attributeDescriptions[0].binding = 0;
+        attributeDescriptions[0].location = 0;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[0].offset = offsetof(TextVertex, pos);
+        attributeDescriptions[1].binding = 0;
+        attributeDescriptions[1].location = 1;
+        attributeDescriptions[1].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[1].offset = offsetof(TextVertex, texCoord);
+        return attributeDescriptions;
+    }
+};
 struct UniformBufferObject {
     glm::mat4 model;
     glm::mat4 view;
@@ -122,6 +147,21 @@ struct ModelOrientation {
     glm::vec3 position = glm::vec3(0.0f);
     glm::vec3 rotation = glm::vec3(0.0f);
     glm::vec3 scale = glm::vec3(1.0f);
+};
+struct Character{
+    VkImage textureImage;
+    VkImageView textureImageView;
+    VkDeviceMemory textureImageMemory;
+    VkDescriptorSet descriptorSet;
+    glm::ivec2 size;
+    glm::ivec2 bearing;
+    unsigned int advance;
+};
+struct TextData{
+    std::string text;
+    glm::vec3 color = glm::vec3(1.0f);
+    glm::vec2 position = glm::vec2(0.0f);
+    float scale = 1.0f;
 };
 
 class GustGrid {
@@ -165,6 +205,27 @@ private:
     VkImage colorImage;
     VkDeviceMemory colorImageMemory;
     VkImageView colorImageView;
+    VkBuffer textVertexBuffer;
+    VkDeviceMemory textVertexBufferMemory;
+    void* textVertexBufferMapped;
+    VkBuffer textIndexBuffer;
+    VkDeviceMemory textIndexBufferMemory;
+    std::vector<TextData> textObjects;
+    uint32_t currentCharacterCount = 0;
+    std::vector<TextVertex> textVertices = {
+        {{-1.0f, -1.0f}, {0.0f, 0.0f}},
+        {{1.0f, -1.0f}, {1.0f, 0.0f}},
+        {{1.0f,  1.0f}, {1.0f, 1.0f}},
+        {{-1.0f,  1.0f}, {0.0f, 1.0f}}
+    };
+    std::vector<uint32_t> textIndices = {
+        0, 1, 2,
+        2, 3, 0
+    };
+    VkPipeline textPipeline;
+    VkPipelineLayout textPipelineLayout;
+    VkDescriptorSetLayout textDescriptorSetLayout;
+    VkDescriptorPool textDescriptorPool;
     bool gpuEnabled = true;
     bool cpuFanEnabled = true;
     bool frontFanEnabled = true;
@@ -176,6 +237,8 @@ private:
         {"ram", {}},
         {"cpu", {}},
         {"gpu", {.enabled = gpuEnabled}},
+        {"gpufan1", {.enabled = gpuEnabled}},
+        {"gpufan2", {.enabled = gpuEnabled}},
         {"ioshield", {}},
         {"motherboard", {}},
         {"psu", {}},
@@ -191,7 +254,7 @@ private:
         {"backfan3", {}},
         {"fanback1", {}},
         {"fanback2", {}},
-        {"fanback3", {}}
+        {"fanback3", {}},
     };
     float camRadius = 15.0f;
     float camPitch = PI / 12.0f;
@@ -210,6 +273,38 @@ private:
     float currentTime = 0.0f;
     float fanStrength = 10.0f;
     float dt = 0.0f;
+
+    std::map<char, Character> Characters;
+    void prepareCharacters(){
+        FT_Library ft;
+        if(FT_Init_FreeType(&ft))
+            throw std::runtime_error("Failed to initialize FreeType library");
+        FT_Face face;
+        if(FT_New_Face(ft, "src/fonts/Lato.ttf", 0, &face))
+            throw std::runtime_error("Failed to load font");
+        FT_Set_Pixel_Sizes(face, 0, 48);
+        FT_ULong codepoints[129];
+        for(FT_ULong c = 0; c<128; c++) codepoints[c] = c;
+        codepoints[128] = 0x00B0;
+        for(FT_ULong c : codepoints){
+            if(FT_Load_Char(face, c, FT_LOAD_RENDER)){
+                std::cerr<<"Failed to load character: "<<(int) c<<std::endl;
+                continue;
+            }
+            Character character;
+            character.size = glm::ivec2(face->glyph->bitmap.width, face->glyph->bitmap.rows);
+            character.bearing = glm::ivec2(face->glyph->bitmap_left, face->glyph->bitmap_top);
+            character.advance = face->glyph->advance.x;
+            if(face->glyph->bitmap.width == 0 || face->glyph->bitmap.rows == 0 || face->glyph->bitmap.buffer == nullptr) {
+                unsigned char dummyPixel = 0;
+                createTextureImage(1, 1, &dummyPixel, character.textureImage, character.textureImageMemory);
+            } else createTextureImage(face->glyph->bitmap.width, face->glyph->bitmap.rows, face->glyph->bitmap.buffer, character.textureImage, character.textureImageMemory);
+            createTextureImageView(VK_FORMAT_R8_UNORM, character.textureImage, character.textureImageView);
+            Characters[c] = character;
+        }
+        FT_Done_Face(face);
+        FT_Done_FreeType(ft);
+    }
 
     void initWindow(){
         glfwInit();
@@ -243,6 +338,11 @@ private:
         createUniformBuffers();
         createDescriptorPool();
         createDescriptorSets();
+        prepareCharacters();
+        createTextDescriptorSetLayout();
+        createTextDescriptorPool();
+        createTextDescriptorSets();
+        createTextResources();
         createCommandBuffers();
         createSyncObjects();
     }
@@ -255,6 +355,15 @@ private:
     }
     void cleanup(){
         cleanupSwapChain();
+        if(textVertexBuffer) vkUnmapMemory(device, textVertexBufferMemory);
+        vkDestroyBuffer(device, textVertexBuffer, nullptr);
+        vkFreeMemory(device, textVertexBufferMemory, nullptr);
+        vkDestroyBuffer(device, textIndexBuffer, nullptr);
+        vkFreeMemory(device, textIndexBufferMemory, nullptr);
+        vkDestroyPipeline(device, textPipeline, nullptr);
+        vkDestroyPipelineLayout(device, textPipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, textDescriptorSetLayout, nullptr);
+        vkDestroyDescriptorPool(device, textDescriptorPool, nullptr);
         vkDestroySampler(device, textureSampler, nullptr);
         vkDestroyDescriptorPool(device, descriptorPool, nullptr);
         for(auto &model : models){
@@ -276,6 +385,11 @@ private:
             vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
             vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
             vkDestroyFence(device, inFlightFences[i], nullptr);
+        }
+        for(auto &character : Characters){
+            vkDestroyImageView(device, character.second.textureImageView, nullptr);
+            vkDestroyImage(device, character.second.textureImage, nullptr);
+            vkFreeMemory(device, character.second.textureImageMemory, nullptr);
         }
         vkDestroyPipeline(device, graphicsPipeline, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
@@ -686,6 +800,103 @@ private:
         vkDestroyShaderModule(device, fragShaderModule, nullptr);
         vkDestroyShaderModule(device, vertShaderModule, nullptr);
     }
+    void createTextPipeline(){
+        std::vector<char> vertShaderCode = readFile("src/shaders/compiled/ui.vert.spv");
+        std::vector<char> fragShaderCode = readFile("src/shaders/compiled/text.frag.spv");
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+        VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertShaderStageInfo.module = vertShaderModule;
+        vertShaderStageInfo.pName = "main";
+        VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageInfo.module = fragShaderModule;
+        fragShaderStageInfo.pName = "main";
+        VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+        auto bindingDescription = TextVertex::getBindingDescription();
+        auto attributeDescriptions = TextVertex::getAttributeDescriptions();
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        inputAssembly.primitiveRestartEnable = VK_FALSE;
+        std::vector<VkDynamicState> dynamicStates = {
+            VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR
+        };
+        VkPipelineDynamicStateCreateInfo dynamicState{};
+        dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+        dynamicState.pDynamicStates = dynamicStates.data();
+        VkPipelineViewportStateCreateInfo viewportState{};
+        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo rasterizer{};
+        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE;
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        VkPipelineMultisampleStateCreateInfo multisampling{};
+        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampling.rasterizationSamples = msaaSamples;
+        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachment.blendEnable = VK_TRUE;
+        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        VkPipelineColorBlendStateCreateInfo colorBlending{};
+        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlending.logicOpEnable = VK_FALSE;
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &colorBlendAttachment;
+        VkPipelineDepthStencilStateCreateInfo depthStencil{};
+        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        VkPushConstantRange pushConstantRange{};
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        pushConstantRange.offset = 0;
+        pushConstantRange.size = sizeof(glm::vec3);
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &textDescriptorSetLayout;
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+        if(vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &textPipelineLayout) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create text pipeline layout!");
+        VkGraphicsPipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.layout = textPipelineLayout;
+        pipelineInfo.renderPass = renderPass;
+        pipelineInfo.subpass = 0;
+        if(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &textPipeline) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create text graphics pipeline!");
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
+    }
     void createColorResources(){
         VkFormat colorFormat = swapChainImageFormat;
         createImage(swapChainExtent.width, swapChainExtent.height, msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, colorImage, colorImageMemory);
@@ -720,17 +931,39 @@ private:
     bool hasStencilComponent(VkFormat format){
         return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
     }
+    void createTextureImage(int width, int height, unsigned char* imageBuffer, VkImage &textureImage, VkDeviceMemory &textureImageMemory){
+        if(width == 0 || height == 0) {
+            width = std::max(width, 1);
+            height = std::max(height, 1);
+        }
+        VkDeviceSize imageSize = width * height;
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingBufferMemory;
+        createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+        void* data;
+        vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
+        memcpy(data, imageBuffer, (size_t) imageSize);
+        vkUnmapMemory(device, stagingBufferMemory);
+        createImage(width, height, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8_UNORM, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
+        transitionImageLayout(textureImage, VK_FORMAT_R8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+        transitionImageLayout(textureImage, VK_FORMAT_R8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingBufferMemory, nullptr);
+    }
     void createTextureImage(){
+        stbi_set_flip_vertically_on_load(true);
         VkFormat textureFormats[] = {VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
         std::string pathNames[] = {"/basecolor.png", "/metallic.png", "/roughness.png", "/normal.png"};
         for(auto &model : models){
             for(size_t i=0; i<4; i++){
                 int texWidth, texHeight, texChannels;
                 std::string texturePath;
-                if(model.first == "cpufan" || model.first == "frontfan" || model.first == "topfan" || model.first == "fancpu" || model.first == "fanfront" || model.first == "fantop" || model.first == "backfan1" || model.first == "backfan2" || model.first == "backfan3" || model.first == "fanback1" || model.first == "fanback2" || model.first == "fanback3"){
+                if(model.first == "cpufan" || model.first == "frontfan" || model.first == "topfan" || model.first == "fancpu" || model.first == "fanfront" || model.first == "fantop" || model.first == "backfan1" || model.first == "backfan2" || model.first == "backfan3" || model.first == "fanback1" || model.first == "fanback2" || model.first == "fanback3" || model.first == "gpufan1" || model.first == "gpufan2"){
                     texturePath = "src/textures/case" + pathNames[i];
                     if(model.first == "cpufan" || model.first == "frontfan" || model.first == "topfan") model.second.name = model.first;
                     else if(model.first == "backfan1" || model.first == "backfan2" || model.first == "backfan3") model.second.name = "backfan";
+                    else if(model.first == "gpufan1" || model.first == "gpufan2") model.second.name = "gpufan";
                     else model.second.name = "fan";
                 }
                 else{
@@ -761,6 +994,9 @@ private:
             }
             model.second.loaded = true;
         }
+    }
+    void createTextureImageView(VkFormat textureFormat, VkImage textureImage, VkImageView &textureImageView){
+        textureImageView = createImageView(textureImage, textureFormat);
     }
     void createTextureImageView(){
         VkFormat textureFormats[] = {VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
@@ -1017,6 +1253,119 @@ private:
             model.vertexBufferMemory = vertexBufferMemory;
         }
     }
+    void createTextResources(){
+        const size_t maxChars = 1000;
+        const size_t maxVertices = maxChars * 4;
+        const size_t maxIndices = maxChars * 6;
+        VkDeviceSize vertexBufferSize = sizeof(TextVertex) * maxVertices;
+        createBuffer(vertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, textVertexBuffer, textVertexBufferMemory);
+        vkMapMemory(device, textVertexBufferMemory, 0, vertexBufferSize, 0, &textVertexBufferMapped);
+        std::vector<uint32_t> indices;
+        for(uint32_t i=0; i<maxChars; i++){
+            uint32_t baseVertex = i * 4;
+            indices.insert(indices.end(), {
+                baseVertex + 0, baseVertex + 1, baseVertex + 2,
+                baseVertex + 2, baseVertex + 3, baseVertex + 0
+            });
+        }
+        VkDeviceSize indexBufferSize = sizeof(uint32_t) * indices.size();
+        createBuffer(indexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textIndexBuffer, textIndexBufferMemory);
+        VkBuffer stagingBuffer; 
+        VkDeviceMemory stagingBufferMemory;
+        createBuffer(indexBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+        void* data;
+        vkMapMemory(device, stagingBufferMemory, 0, indexBufferSize, 0, &data);
+        memcpy(data, indices.data(), indexBufferSize);
+        vkUnmapMemory(device, stagingBufferMemory);
+        copyBuffer(stagingBuffer, textIndexBuffer, indexBufferSize);
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingBufferMemory, nullptr);
+        createTextPipeline();
+        textObjects.push_back({"Hello Vulkan!", glm::vec3(0.0, 0.0, 0.0f), glm::vec2(50.0f, 50.0f), 1.0f});
+    }
+    void createTextDescriptorSetLayout(){
+        VkDescriptorSetLayoutBinding samplerLayoutBinding{};
+        samplerLayoutBinding.binding = 0;
+        samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        samplerLayoutBinding.descriptorCount = 1;
+        samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        samplerLayoutBinding.pImmutableSamplers = nullptr;
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 1;
+        layoutInfo.pBindings = &samplerLayoutBinding;
+        if(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &textDescriptorSetLayout) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create text descriptor set layout!");
+    }
+    void updateTextVertexBuffer(){
+        std::vector<TextVertex> vertices;
+        currentCharacterCount = 0;
+        for(const auto &textObject : textObjects){
+            if(!textObject.text.empty()){
+                float x = textObject.position.x;
+                float y = textObject.position.y;
+                float scale = textObject.scale;
+                for(char c : textObject.text){
+                    if(Characters.find(c) == Characters.end()) continue;
+                    const Character &ch = Characters[c];
+                    float xpos = x + ch.bearing.x * scale;
+                    float ypos = y - (ch.size.y - ch.bearing.y) * scale;
+                    float w = ch.size.x * scale;
+                    float h = ch.size.y * scale;
+                    float ndcX1 = (2.0f * xpos / swapChainExtent.width) - 1.0f;
+                    float ndcY1 = 1.0f - (2.0f * (ypos + h) / swapChainExtent.height);
+                    float ndcX2 = (2.0f * (xpos + w) / swapChainExtent.width) - 1.0f;
+                    float ndcY2 = 1.0f - (2.0f * ypos / swapChainExtent.height);
+                    vertices.push_back({{ndcX1, ndcY1}, {0.0f, 0.0f}});
+                    vertices.push_back({{ndcX1, ndcY2}, {0.0f, 1.0f}});
+                    vertices.push_back({{ndcX2, ndcY2}, {1.0f, 1.0f}});
+                    vertices.push_back({{ndcX2, ndcY1}, {1.0f, 0.0f}});
+                    x += (ch.advance >> 6) * scale;
+                    currentCharacterCount++;
+                }
+            }
+        }
+        if(!vertices.empty() && vertices.size() * sizeof(TextVertex) <= 1000 * 4 * sizeof(TextVertex))
+            memcpy(textVertexBufferMapped, vertices.data(), vertices.size() * sizeof(TextVertex));
+    }
+    void createTextDescriptorPool(){
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type =VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize.descriptorCount = static_cast<uint32_t>(Characters.size());
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.maxSets = static_cast<uint32_t>(Characters.size());
+        if(vkCreateDescriptorPool(device, &poolInfo, nullptr, &textDescriptorPool) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create text descriptor pool!");
+    }
+    void createTextDescriptorSets(){
+        for(auto &[c, character] : Characters){
+            VkDescriptorSetAllocateInfo allocInfo{};
+            allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            allocInfo.descriptorPool = textDescriptorPool;
+            allocInfo.descriptorSetCount = 1;
+            allocInfo.pSetLayouts = &textDescriptorSetLayout;
+            VkDescriptorSet descriptorSet;
+            if(vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS)
+                throw std::runtime_error("Failed to allocate text descriptor sets!");
+            VkDescriptorImageInfo imageInfo{};
+            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfo.imageView = character.textureImageView;
+            imageInfo.sampler = textureSampler;
+            VkWriteDescriptorSet descriptorWrite{};
+            descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrite.dstSet = descriptorSet;
+            descriptorWrite.dstBinding = 0;
+            descriptorWrite.dstArrayElement = 0;
+            descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrite.descriptorCount = 1;
+            descriptorWrite.pImageInfo = &imageInfo;
+            vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+            character.descriptorSet = descriptorSet;
+        }
+    }
     void createUniformBuffers(){
         VkDeviceSize bufferSize = sizeof(UniformBufferObject);
         for(auto &model : models){
@@ -1188,6 +1537,14 @@ private:
                 .position = glm::vec3(0.48427, 2.60047, 3.42548),
                 .rotation = glm::vec3(0.0f, 0.0f, currentTime * fanStrength)
             }},
+            {"gpufan1", {
+                .position = glm::vec3(-0.364, 0.3565, 0.4438),
+                .rotation = glm::vec3(-PI / 2.0f, 0.0f, currentTime * fanStrength),
+            }},
+            {"gpufan2", {
+                .position = glm::vec3(-0.364, 0.3565, 2.5671),
+                .rotation = glm::vec3(-PI / 2.0f, 0.0f, currentTime * fanStrength),
+            }}
         };
         for(auto &model : models){
             if(!model.second.loaded || !model.second.enabled) continue;
@@ -1203,7 +1560,7 @@ private:
                 if(backFanLocations[i] > 0.0f) continue;
                 model.second.modelMatrix = glm::mat4(1.0f);
                 model.second.modelMatrix = glm::translate(model.second.modelMatrix, glm::vec3(0.0f, backFanLocations[i], 0.0f));
-            } else if(model.second.name == "fan"){
+            } else if(model.second.name == "fan" || model.second.name == "gpufan"){
                 ModelOrientation &orientation = orientations[model.first];
                 model.second.modelMatrix = glm::mat4(1.0f);
                 model.second.modelMatrix = glm::translate(model.second.modelMatrix, orientation.position);
@@ -1231,9 +1588,30 @@ private:
         vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &models["glass"].descriptorSets[currentFrame], 0, nullptr);
         vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(models["glass"].indices.size()), 1, 0, 0, 0);
+        renderText(commandBuffer);
         vkCmdEndRenderPass(commandBuffer);
         if(vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
             throw std::runtime_error("Failed to record command buffer!");
+    }
+    void renderText(VkCommandBuffer commandBuffer){
+        if(textObjects.empty()) return;
+        updateTextVertexBuffer();
+        if(currentCharacterCount == 0) return;
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipeline);
+        VkDeviceSize offsets[] = {0};
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, &textVertexBuffer, offsets);
+        vkCmdBindIndexBuffer(commandBuffer, textIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+        uint32_t indexOffset = 0;
+        for(const auto &textObject : textObjects){
+            vkCmdPushConstants(commandBuffer, textPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(glm::vec3), &textObject.color);
+            for(char c : textObject.text){
+                if(Characters.find(c) == Characters.end()) continue;
+                Character &ch = Characters[c];
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipelineLayout, 0, 1, &ch.descriptorSet, 0, nullptr);
+                vkCmdDrawIndexed(commandBuffer, 6, 1, indexOffset, 0, 0);
+                indexOffset += 6;
+            }
+        }
     }
     void createRenderPass(){
         VkAttachmentDescription colorAttachment{};

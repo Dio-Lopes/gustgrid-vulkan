@@ -1323,6 +1323,7 @@ private:
     }
     void createUIResources(){
         std::vector<uint32_t> uiIndices = {0, 1, 2, 2, 3, 0};
+        VkDeviceSize indexBufferSize = sizeof(uint32_t) * 6;
         createBuffer(indexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, uiIndexBuffer, uiIndexBufferMemory);
         VkBuffer stagingBuffer;
         VkDeviceMemory stagingBufferMemory;
@@ -1350,7 +1351,6 @@ private:
                 {{ndcX2, ndcY1}, {1.0f, 0.0f}}
             };
             VkDeviceSize vertexBufferSize = sizeof(TextVertex) * 4;
-            VkDeviceSize indexBufferSize = sizeof(uint32_t) * 6;
             createBuffer(vertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uiObject.second.vertexBuffer, uiObject.second.vertexBufferMemory);
             vkMapMemory(device, uiObject.second.vertexBufferMemory, 0, vertexBufferSize, 0, &uiObject.second.vertexBufferMapped);
             memcpy(uiObject.second.vertexBufferMapped, uiVertices.data(), vertexBufferSize);

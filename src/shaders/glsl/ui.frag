@@ -1,11 +1,17 @@
-#version 330 core
-in vec2 TexCoords;
-out vec4 color;
-
-uniform sampler2D image;
-uniform vec3 tintColor;
+#version 450
+layout (location = 0) in vec2 fragTexCoord;
+layout(binding = 0) uniform sampler2D fontTexture;
+layout(push_constant) uniform PushConstants {
+    vec3 textColor;
+    uint isUI;
+} pc;
+layout (location = 0) out vec4 outColor;
 
 void main(){
-    color = vec4(tintColor, 1.0) * texture(image, TexCoords);
-    if(color.a < 0.01) discard;
+    if(pc.isUI==1) outColor = texture(fontTexture, fragTexCoord);
+    else{
+        float alpha = texture(fontTexture, fragTexCoord).r;
+        outColor = vec4(pc.textColor, alpha);
+        if(alpha < 0.01) discard;
+    }
 }

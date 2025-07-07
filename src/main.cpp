@@ -118,6 +118,10 @@ struct TextVertex{
         return attributeDescriptions;
     }
 };
+struct UIPushConstants {
+    glm::vec3 color;
+    uint32_t isUI;
+};
 struct UniformBufferObject {
     glm::mat4 model;
     glm::mat4 view;
@@ -162,6 +166,20 @@ struct TextData{
     glm::vec3 color = glm::vec3(1.0f);
     glm::vec2 position = glm::vec2(0.0f);
     float scale = 1.0f;
+    bool enabled = true;
+};
+struct UIData{
+    VkImage textureImage;
+    VkImageView textureImageView;
+    VkDeviceMemory textureImageMemory;
+    VkDescriptorSet descriptorSet;
+    VkBuffer vertexBuffer;
+    VkDeviceMemory vertexBufferMemory;
+    void* vertexBufferMapped;
+    glm::vec2 size = glm::vec2(1.0f);
+    glm::vec2 position = glm::vec2(0.0f);
+    std::string name;
+    bool enabled = true;
 };
 
 class GustGrid {
@@ -210,22 +228,17 @@ private:
     void* textVertexBufferMapped;
     VkBuffer textIndexBuffer;
     VkDeviceMemory textIndexBufferMemory;
+    VkBuffer uiIndexBuffer;
+    VkDeviceMemory uiIndexBufferMemory;
+    void* uiIndexBufferMapped;
     std::vector<TextData> textObjects;
     uint32_t currentCharacterCount = 0;
-    std::vector<TextVertex> textVertices = {
-        {{-1.0f, -1.0f}, {0.0f, 0.0f}},
-        {{1.0f, -1.0f}, {1.0f, 0.0f}},
-        {{1.0f,  1.0f}, {1.0f, 1.0f}},
-        {{-1.0f,  1.0f}, {0.0f, 1.0f}}
-    };
-    std::vector<uint32_t> textIndices = {
-        0, 1, 2,
-        2, 3, 0
-    };
     VkPipeline textPipeline;
     VkPipelineLayout textPipelineLayout;
     VkDescriptorSetLayout textDescriptorSetLayout;
     VkDescriptorPool textDescriptorPool;
+    VkDescriptorSetLayout uiDescriptorSetLayout;
+    VkDescriptorPool uiDescriptorPool;
     bool gpuEnabled = true;
     bool cpuFanEnabled = true;
     bool frontFanEnabled = true;
@@ -255,6 +268,13 @@ private:
         {"fanback1", {}},
         {"fanback2", {}},
         {"fanback3", {}},
+    };
+    std::map<std::string, UIData> uiObjects = {
+        {"thermalmap", {
+            .name = "thermalmap",
+            .position = glm::vec2(50.0f, 700.0f),
+            .size = glm::vec2(30.0f, -500.0f)
+        }},
     };
     float camRadius = 15.0f;
     float camPitch = PI / 12.0f;
@@ -297,8 +317,8 @@ private:
             character.advance = face->glyph->advance.x;
             if(face->glyph->bitmap.width == 0 || face->glyph->bitmap.rows == 0 || face->glyph->bitmap.buffer == nullptr) {
                 unsigned char dummyPixel = 0;
-                createTextureImage(1, 1, &dummyPixel, character.textureImage, character.textureImageMemory);
-            } else createTextureImage(face->glyph->bitmap.width, face->glyph->bitmap.rows, face->glyph->bitmap.buffer, character.textureImage, character.textureImageMemory);
+                createTextureImage(1, 1, &dummyPixel, character.textureImage, character.textureImageMemory, VK_FORMAT_R8_UNORM);
+            } else createTextureImage(face->glyph->bitmap.width, face->glyph->bitmap.rows, face->glyph->bitmap.buffer, character.textureImage, character.textureImageMemory, VK_FORMAT_R8_UNORM);
             createTextureImageView(VK_FORMAT_R8_UNORM, character.textureImage, character.textureImageView);
             Characters[c] = character;
         }
@@ -343,6 +363,11 @@ private:
         createTextDescriptorPool();
         createTextDescriptorSets();
         createTextResources();
+        prepareUIElements();
+        createUIDescriptorSetLayout();
+        createUIDescriptorPool();
+        createUIDescriptorSets();
+        createUIResources();
         createCommandBuffers();
         createSyncObjects();
     }
@@ -391,6 +416,17 @@ private:
             vkDestroyImage(device, character.second.textureImage, nullptr);
             vkFreeMemory(device, character.second.textureImageMemory, nullptr);
         }
+        for(auto &uiObject : uiObjects){
+            vkDestroyImageView(device, uiObject.second.textureImageView, nullptr);
+            vkDestroyImage(device, uiObject.second.textureImage, nullptr);
+            vkFreeMemory(device, uiObject.second.textureImageMemory, nullptr);
+            vkDestroyBuffer(device, uiObject.second.vertexBuffer, nullptr);
+            vkFreeMemory(device, uiObject.second.vertexBufferMemory, nullptr);
+            vkDestroyDescriptorSetLayout(device, uiDescriptorSetLayout, nullptr);
+            vkDestroyDescriptorPool(device, uiDescriptorPool, nullptr);
+        }
+        vkDestroyBuffer(device, uiIndexBuffer, nullptr);
+        vkFreeMemory(device, uiIndexBufferMemory, nullptr);
         vkDestroyPipeline(device, graphicsPipeline, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyRenderPass(device, renderPass, nullptr);
@@ -445,6 +481,9 @@ private:
     }
     void drawFrame(){
         dt = glfwGetTime() - currentTime;
+        currentTime = glfwGetTime();
+        float fps = 1.0f / dt;
+        textObjects[0].text = std::to_string((int) fps) + " FPS";
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
         uint32_t imageIndex;
         VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
@@ -455,7 +494,6 @@ private:
             throw std::runtime_error("Failed to acquire swap chain image!");
         vkResetFences(device, 1, &inFlightFences[currentFrame]);
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);
-        currentTime = glfwGetTime();
         recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
         updateUniformBuffer(currentFrame);
         VkSubmitInfo submitInfo{};
@@ -802,7 +840,7 @@ private:
     }
     void createTextPipeline(){
         std::vector<char> vertShaderCode = readFile("src/shaders/compiled/ui.vert.spv");
-        std::vector<char> fragShaderCode = readFile("src/shaders/compiled/text.frag.spv");
+        std::vector<char> fragShaderCode = readFile("src/shaders/compiled/ui.frag.spv");
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
         VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
@@ -868,7 +906,7 @@ private:
         VkPushConstantRange pushConstantRange{};
         pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         pushConstantRange.offset = 0;
-        pushConstantRange.size = sizeof(glm::vec3);
+        pushConstantRange.size = sizeof(glm::vec3) + sizeof(uint32_t);
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipelineLayoutInfo.setLayoutCount = 1;
@@ -931,7 +969,7 @@ private:
     bool hasStencilComponent(VkFormat format){
         return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
     }
-    void createTextureImage(int width, int height, unsigned char* imageBuffer, VkImage &textureImage, VkDeviceMemory &textureImageMemory){
+    void createTextureImage(int width, int height, unsigned char* imageBuffer, VkImage &textureImage, VkDeviceMemory &textureImageMemory, VkFormat format){
         if(width == 0 || height == 0) {
             width = std::max(width, 1);
             height = std::max(height, 1);
@@ -944,10 +982,10 @@ private:
         vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
         memcpy(data, imageBuffer, (size_t) imageSize);
         vkUnmapMemory(device, stagingBufferMemory);
-        createImage(width, height, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8_UNORM, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
-        transitionImageLayout(textureImage, VK_FORMAT_R8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        createImage(width, height, VK_SAMPLE_COUNT_1_BIT, format, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
+        transitionImageLayout(textureImage, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
-        transitionImageLayout(textureImage, VK_FORMAT_R8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        transitionImageLayout(textureImage, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingBufferMemory, nullptr);
     }
@@ -1281,7 +1319,43 @@ private:
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingBufferMemory, nullptr);
         createTextPipeline();
-        textObjects.push_back({"Hello Vulkan!", glm::vec3(0.0, 0.0, 0.0f), glm::vec2(50.0f, 50.0f), 1.0f});
+        textObjects.push_back({"", glm::vec3(1.0f), {50.0f, 50.0f}, 0.8f});
+    }
+    void createUIResources(){
+        std::vector<uint32_t> uiIndices = {0, 1, 2, 2, 3, 0};
+        createBuffer(indexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, uiIndexBuffer, uiIndexBufferMemory);
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingBufferMemory;
+        createBuffer(indexBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+        void* data;
+        vkMapMemory(device, stagingBufferMemory, 0, indexBufferSize, 0, &data);
+        memcpy(data, uiIndices.data(), indexBufferSize);
+        vkUnmapMemory(device, stagingBufferMemory);
+        copyBuffer(stagingBuffer, uiIndexBuffer, indexBufferSize);
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingBufferMemory, nullptr);
+        for(auto &uiObject : uiObjects){
+            float xpos = uiObject.second.position.x;
+            float ypos = uiObject.second.position.y;
+            float w = uiObject.second.size.x;
+            float h = uiObject.second.size.y;
+            float ndcX1 = (2.0f * xpos / swapChainExtent.width) - 1.0f;
+            float ndcY1 = (2.0f * ypos / swapChainExtent.height) - 1.0f;
+            float ndcX2 = (2.0f * (xpos + w) / swapChainExtent.width) - 1.0f;
+            float ndcY2 = (2.0f * (ypos + h) / swapChainExtent.height) - 1.0f;
+            std::vector<TextVertex> uiVertices = {
+                {{ndcX1, ndcY1}, {0.0f, 0.0f}},
+                {{ndcX1, ndcY2}, {0.0f, 1.0f}},
+                {{ndcX2, ndcY2}, {1.0f, 1.0f}},
+                {{ndcX2, ndcY1}, {1.0f, 0.0f}}
+            };
+            VkDeviceSize vertexBufferSize = sizeof(TextVertex) * 4;
+            VkDeviceSize indexBufferSize = sizeof(uint32_t) * 6;
+            createBuffer(vertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uiObject.second.vertexBuffer, uiObject.second.vertexBufferMemory);
+            vkMapMemory(device, uiObject.second.vertexBufferMemory, 0, vertexBufferSize, 0, &uiObject.second.vertexBufferMapped);
+            memcpy(uiObject.second.vertexBufferMapped, uiVertices.data(), vertexBufferSize);
+            vkUnmapMemory(device, uiObject.second.vertexBufferMemory);
+        }
     }
     void createTextDescriptorSetLayout(){
         VkDescriptorSetLayoutBinding samplerLayoutBinding{};
@@ -1295,6 +1369,20 @@ private:
         layoutInfo.bindingCount = 1;
         layoutInfo.pBindings = &samplerLayoutBinding;
         if(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &textDescriptorSetLayout) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create text descriptor set layout!");
+    }
+    void createUIDescriptorSetLayout(){
+        VkDescriptorSetLayoutBinding samplerLayoutBinding{};
+        samplerLayoutBinding.binding = 0;
+        samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        samplerLayoutBinding.descriptorCount = 1;
+        samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        samplerLayoutBinding.pImmutableSamplers = nullptr;
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 1;
+        layoutInfo.pBindings = &samplerLayoutBinding;
+        if(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &uiDescriptorSetLayout) != VK_SUCCESS)
             throw std::runtime_error("Failed to create text descriptor set layout!");
     }
     void updateTextVertexBuffer(){
@@ -1313,9 +1401,9 @@ private:
                     float w = ch.size.x * scale;
                     float h = ch.size.y * scale;
                     float ndcX1 = (2.0f * xpos / swapChainExtent.width) - 1.0f;
-                    float ndcY1 = 1.0f - (2.0f * (ypos + h) / swapChainExtent.height);
+                    float ndcY1 = (2.0f * ypos / swapChainExtent.height) - 1.0f;
                     float ndcX2 = (2.0f * (xpos + w) / swapChainExtent.width) - 1.0f;
-                    float ndcY2 = 1.0f - (2.0f * ypos / swapChainExtent.height);
+                    float ndcY2 = (2.0f * (ypos + h) / swapChainExtent.height) - 1.0f;
                     vertices.push_back({{ndcX1, ndcY1}, {0.0f, 0.0f}});
                     vertices.push_back({{ndcX1, ndcY2}, {0.0f, 1.0f}});
                     vertices.push_back({{ndcX2, ndcY2}, {1.0f, 1.0f}});
@@ -1330,7 +1418,7 @@ private:
     }
     void createTextDescriptorPool(){
         VkDescriptorPoolSize poolSize{};
-        poolSize.type =VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         poolSize.descriptorCount = static_cast<uint32_t>(Characters.size());
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1338,6 +1426,18 @@ private:
         poolInfo.pPoolSizes = &poolSize;
         poolInfo.maxSets = static_cast<uint32_t>(Characters.size());
         if(vkCreateDescriptorPool(device, &poolInfo, nullptr, &textDescriptorPool) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create text descriptor pool!");
+    }
+    void createUIDescriptorPool(){
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize.descriptorCount = static_cast<uint32_t>(uiObjects.size());
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.maxSets = static_cast<uint32_t>(uiObjects.size());
+        if(vkCreateDescriptorPool(device, &poolInfo, nullptr, &uiDescriptorPool) != VK_SUCCESS)
             throw std::runtime_error("Failed to create text descriptor pool!");
     }
     void createTextDescriptorSets(){
@@ -1364,6 +1464,61 @@ private:
             descriptorWrite.pImageInfo = &imageInfo;
             vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
             character.descriptorSet = descriptorSet;
+        }
+    }
+    void createUIDescriptorSets(){
+        for(auto &ui : uiObjects){
+            VkDescriptorSetAllocateInfo allocInfo{};
+            allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            allocInfo.descriptorPool = uiDescriptorPool;
+            allocInfo.descriptorSetCount = 1;
+            allocInfo.pSetLayouts = &uiDescriptorSetLayout;
+            VkDescriptorSet descriptorSet;
+            if(vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS)
+                throw std::runtime_error("Failed to allocate UI descriptor sets!");
+            VkDescriptorImageInfo imageInfo{};
+            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfo.imageView = ui.second.textureImageView;
+            imageInfo.sampler = textureSampler;
+            VkWriteDescriptorSet descriptorWrite{};
+            descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrite.dstSet = descriptorSet;
+            descriptorWrite.dstBinding = 0;
+            descriptorWrite.dstArrayElement = 0;
+            descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrite.descriptorCount = 1;
+            descriptorWrite.pImageInfo = &imageInfo;
+            vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+            ui.second.descriptorSet = descriptorSet;
+        }
+    }
+    void prepareUIElements(){
+        for(auto &ui : uiObjects){
+            stbi_set_flip_vertically_on_load(true);
+            int texWidth, texHeight, texChannels;
+            std::string texturePath = "src/textures/ui/" + ui.second.name + ".png";
+            stbi_uc* pixels = stbi_load(texturePath.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+            VkDeviceSize imageSize = texWidth * texHeight * 4;
+            if(!pixels) throw std::runtime_error("Failed to load texture image!");
+            VkBuffer stagingBuffer;
+            VkDeviceMemory stagingBufferMemory;
+            createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+            void* data;
+            VkImage textureImage;
+            VkDeviceMemory textureImageMemory;
+            vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
+            memcpy(data, pixels, (size_t) imageSize);
+            vkUnmapMemory(device, stagingBufferMemory);
+            stbi_image_free(pixels);
+            createImage(texWidth, texHeight, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
+            transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
+            transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            vkDestroyBuffer(device, stagingBuffer, nullptr);
+            vkFreeMemory(device, stagingBufferMemory, nullptr);
+            ui.second.textureImage = textureImage;
+            ui.second.textureImageMemory = textureImageMemory;
+            createTextureImageView(VK_FORMAT_R8G8B8A8_SRGB, textureImage, ui.second.textureImageView);
         }
     }
     void createUniformBuffers(){
@@ -1504,7 +1659,7 @@ private:
         renderPassInfo.renderArea.offset = {0, 0};
         renderPassInfo.renderArea.extent = swapChainExtent;
         std::array<VkClearValue, 2> clearValues{};
-        clearValues[0].color = {0.1f, 0.1f, 0.25f, 1.0f};
+        clearValues[0].color = {0.012f, 0.012f, 0.05f, 1.0f};
         clearValues[1].depthStencil = {1.0f, 0};
         renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
         renderPassInfo.pClearValues = clearValues.data();
@@ -1588,6 +1743,7 @@ private:
         vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &models["glass"].descriptorSets[currentFrame], 0, nullptr);
         vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(models["glass"].indices.size()), 1, 0, 0, 0);
+        renderUI(commandBuffer);
         renderText(commandBuffer);
         vkCmdEndRenderPass(commandBuffer);
         if(vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
@@ -1603,7 +1759,9 @@ private:
         vkCmdBindIndexBuffer(commandBuffer, textIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
         uint32_t indexOffset = 0;
         for(const auto &textObject : textObjects){
-            vkCmdPushConstants(commandBuffer, textPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(glm::vec3), &textObject.color);
+            if(!textObject.enabled) continue;
+            UIPushConstants pushData = {textObject.color, 0};
+            vkCmdPushConstants(commandBuffer, textPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(UIPushConstants), &pushData);
             for(char c : textObject.text){
                 if(Characters.find(c) == Characters.end()) continue;
                 Character &ch = Characters[c];
@@ -1611,6 +1769,19 @@ private:
                 vkCmdDrawIndexed(commandBuffer, 6, 1, indexOffset, 0, 0);
                 indexOffset += 6;
             }
+        }
+    }
+    void renderUI(VkCommandBuffer commandBuffer){
+        UIPushConstants pushData = {{1.0f, 1.0f, 1.0f}, 1};
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipeline);
+        for(const auto &uiObject : uiObjects){
+            if(!uiObject.second.enabled) continue;
+            vkCmdPushConstants(commandBuffer, textPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(UIPushConstants), &pushData);
+            VkDeviceSize offsets[] = {0};
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, &uiObject.second.vertexBuffer, offsets);
+            vkCmdBindIndexBuffer(commandBuffer, uiIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipelineLayout, 0, 1, &uiObject.second.descriptorSet, 0, nullptr);
+            vkCmdDrawIndexed(commandBuffer, 6, 1, 0, 0, 0);
         }
     }
     void createRenderPass(){

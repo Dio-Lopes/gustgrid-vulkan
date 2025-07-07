@@ -35,7 +35,7 @@ set(SOURCES
     src/shaders/compiled/main.vert.spv
     src/shaders/compiled/main.frag.spv
     src/shaders/compiled/ui.vert.spv
-    src/shaders/compiled/text.frag.spv
+    src/shaders/compiled/ui.frag.spv
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES})

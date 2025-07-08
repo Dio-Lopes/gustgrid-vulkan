@@ -166,6 +166,7 @@ struct TextData{
     glm::vec3 color = glm::vec3(1.0f);
     glm::vec2 position = glm::vec2(0.0f);
     float scale = 1.0f;
+    bool anchorLeft = true;
     bool enabled = true;
 };
 struct UIData{
@@ -179,6 +180,7 @@ struct UIData{
     glm::vec2 size = glm::vec2(1.0f);
     glm::vec2 position = glm::vec2(0.0f);
     std::string name;
+    bool anchorLeft = true;
     bool enabled = true;
 };
 
@@ -231,8 +233,22 @@ private:
     VkBuffer uiIndexBuffer;
     VkDeviceMemory uiIndexBufferMemory;
     void* uiIndexBufferMapped;
-    std::vector<TextData> textObjects;
-    uint32_t currentCharacterCount = 0;
+    std::vector<TextData> textObjects = {
+        {.text = "", .color = glm::vec3(1.0f), .position = {50.0f, 50.0f}, .scale = 0.8f},
+        {.text = "100°C", .color = glm::vec3(1.0f), .position = {90.0f, 200.0f}, .scale = 0.6f},
+        {.text = "61°C", .color = glm::vec3(1.0f), .position = {90.0f, 430.0f}, .scale = 0.6f},
+        {.text = "22°C", .color = glm::vec3(1.0f), .position = {90.0f, 680.0f}, .scale = 0.6f},
+        {.text = "Menu", .color = glm::vec3(0.0f), .position = {420.0f, 70.0f}, .scale = 0.9f, .anchorLeft = false},
+        {.text = "GPU Enabled", .color = glm::vec3(0.0f), .position = {420.0f, 130.0f}, .scale = 0.6f, .anchorLeft = false},
+        {.text = "Top Fan Enabled", .color = glm::vec3(0.0f), .position = {420.0f, 180.0f}, .scale = 0.6f, .anchorLeft = false},
+        {.text = "CPU Fan Enabled", .color = glm::vec3(0.0f), .position = {420.0f, 230.0f}, .scale = 0.6f, .anchorLeft = false},
+        {.text = "Front Fan Enabled", .color = glm::vec3(0.0f), .position = {420.0f, 280.0f}, .scale = 0.6f, .anchorLeft = false},
+        {.text = "Back Fans:", .color = glm::vec3(0.0f), .position = {420.0f, 330.0f}, .scale = 0.6f, .anchorLeft = false},
+        {.text = "Fan 1:", .color = glm::vec3(0.0f), .position = {420.0f, 380.0f}, .scale = 0.6f, .anchorLeft = false},
+        {.text = "Fan 2:", .color = glm::vec3(0.0f), .position = {420.0f, 430.0f}, .scale = 0.6f, .anchorLeft = false},
+        {.text = "Fan 3:", .color = glm::vec3(0.0f), .position = {420.0f, 480.0f}, .scale = 0.6f, .anchorLeft = false},
+        {.text = "Show Pressure", .color = glm::vec3(0.0f), .position = {420.0f, 670.0f}, .scale = 0.6f, .anchorLeft = false},
+    };
     VkPipeline textPipeline;
     VkPipelineLayout textPipelineLayout;
     VkDescriptorSetLayout textDescriptorSetLayout;
@@ -243,6 +259,7 @@ private:
     bool cpuFanEnabled = true;
     bool frontFanEnabled = true;
     bool topFanEnabled = true;
+    bool pressureEnabled = true;
     float backFanLocations[3] = {0.0f, -2.5f, 1.0f};
     std::map<std::string, ModelData> models = {
         {"case", {}},
@@ -270,11 +287,21 @@ private:
         {"fanback3", {}},
     };
     std::map<std::string, UIData> uiObjects = {
-        {"thermalmap", {
-            .name = "thermalmap",
-            .position = glm::vec2(50.0f, 700.0f),
-            .size = glm::vec2(30.0f, -500.0f)
-        }},
+        {"thermalmap", {.name = "thermalmap", .position = glm::vec2(50.0f, 700.0f), .size = glm::vec2(30.0f, -500.0f)}},
+        {"gpuCheckbox", {.name = "checkbox/checked", .position = glm::vec2(80.0f, 125.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
+        {"topFanCheckbox", {.name = "checkbox/checked", .position = glm::vec2(80.0f, 175.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
+        {"cpuFanCheckbox", {.name = "checkbox/checked", .position = glm::vec2(80.0f, 225.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
+        {"frontFanCheckbox", {.name = "checkbox/checked", .position = glm::vec2(80.0f, 275.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
+        {"pressureCheckbox", {.name = "checkbox/checked", .position = glm::vec2(80.0f, 665.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
+        {"fanUp", {.name = "arrow/up", .position = glm::vec2(180.0f, 340.0f), .size = glm::vec2(30.0f, -15.0f), .anchorLeft = false}},
+        {"fanDown", {.name = "arrow/down", .position = glm::vec2(180.0f, 355.0f), .size = glm::vec2(30.0f, -15.0f), .anchorLeft = false}},
+        {"slider1", {.name = "checkbox/unchecked", .position = glm::vec2(80.0f, 375.0f), .size = glm::vec2(230.0f, 30.0f), .anchorLeft = false}},
+        {"slider2", {.name = "checkbox/unchecked", .position = glm::vec2(80.0f, 425.0f), .size = glm::vec2(230.0f, 30.0f), .anchorLeft = false}},
+        {"slider3", {.name = "checkbox/unchecked", .position = glm::vec2(80.0f, 475.0f), .size = glm::vec2(230.0f, 30.0f), .anchorLeft = false}},
+        {"sliderknob1", {.name = "slider/knob", .position = glm::vec2(80.0f, 375.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
+        {"sliderknob2", {.name = "slider/knob", .position = glm::vec2(80.0f, 425.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
+        {"sliderknob3", {.name = "slider/knob", .position = glm::vec2(80.0f, 475.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
+        {"uiWindow", {.name = "uiWindow", .position = glm::vec2(50.0f, 50.0f), .size = glm::vec2(400.0f, 700.0f), .anchorLeft = false}}
     };
     float camRadius = 15.0f;
     float camPitch = PI / 12.0f;
@@ -417,14 +444,15 @@ private:
             vkFreeMemory(device, character.second.textureImageMemory, nullptr);
         }
         for(auto &uiObject : uiObjects){
+            if(uiObject.second.vertexBufferMapped) vkUnmapMemory(device, uiObject.second.vertexBufferMemory);
             vkDestroyImageView(device, uiObject.second.textureImageView, nullptr);
             vkDestroyImage(device, uiObject.second.textureImage, nullptr);
             vkFreeMemory(device, uiObject.second.textureImageMemory, nullptr);
             vkDestroyBuffer(device, uiObject.second.vertexBuffer, nullptr);
             vkFreeMemory(device, uiObject.second.vertexBufferMemory, nullptr);
-            vkDestroyDescriptorSetLayout(device, uiDescriptorSetLayout, nullptr);
-            vkDestroyDescriptorPool(device, uiDescriptorPool, nullptr);
         }
+        vkDestroyDescriptorSetLayout(device, uiDescriptorSetLayout, nullptr);
+        vkDestroyDescriptorPool(device, uiDescriptorPool, nullptr);
         vkDestroyBuffer(device, uiIndexBuffer, nullptr);
         vkFreeMemory(device, uiIndexBufferMemory, nullptr);
         vkDestroyPipeline(device, graphicsPipeline, nullptr);
@@ -484,6 +512,26 @@ private:
         currentTime = glfwGetTime();
         float fps = 1.0f / dt;
         textObjects[0].text = std::to_string((int) fps) + " FPS";
+        int backFansEnabled = 0;
+        for(int i = 0; i < 3; i++) if(backFanLocations[i] <= 0.0f) backFansEnabled++;
+        textObjects[9].text = "Back Fans: " + std::to_string(backFansEnabled);
+        textObjects[10].enabled = backFansEnabled > 0;
+        textObjects[11].enabled = backFansEnabled > 1;
+        textObjects[12].enabled = backFansEnabled > 2;
+        uiObjects["sliderknob1"].position.x = 280.0f - (200.0f * (backFanLocations[0] / -5.0f));
+        uiObjects["sliderknob2"].position.x = 280.0f - (200.0f * (backFanLocations[1] / -5.0f));
+        uiObjects["sliderknob3"].position.x = 280.0f - (200.0f * (backFanLocations[2] / -5.0f));
+        uiObjects["sliderknob1"].enabled = backFansEnabled > 0;
+        uiObjects["sliderknob2"].enabled = backFansEnabled > 1;
+        uiObjects["sliderknob3"].enabled = backFansEnabled > 2;
+        uiObjects["slider1"].enabled = backFansEnabled > 0;
+        uiObjects["slider2"].enabled = backFansEnabled > 1;
+        uiObjects["slider3"].enabled = backFansEnabled > 2;
+        uiObjects["gpuCheckbox"].name = gpuEnabled ? "checkbox/checked" : "checkbox/unchecked";
+        uiObjects["topFanCheckbox"].name = topFanEnabled ? "checkbox/checked" : "checkbox/unchecked";
+        uiObjects["cpuFanCheckbox"].name = cpuFanEnabled ? "checkbox/checked" : "checkbox/unchecked";
+        uiObjects["frontFanCheckbox"].name = frontFanEnabled ? "checkbox/checked" : "checkbox/unchecked";
+        uiObjects["pressureCheckbox"].name = pressureEnabled ? "checkbox/checked" : "checkbox/unchecked";
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
         uint32_t imageIndex;
         VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
@@ -498,14 +546,14 @@ private:
         updateUniformBuffer(currentFrame);
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame] };
-        VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+        VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
+        VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
         submitInfo.waitSemaphoreCount = 1;
         submitInfo.pWaitSemaphores = waitSemaphores;
         submitInfo.pWaitDstStageMask = waitStages;
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
-        VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame] };
+        VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = signalSemaphores;
         if(vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS)
@@ -514,7 +562,7 @@ private:
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         presentInfo.waitSemaphoreCount = 1;
         presentInfo.pWaitSemaphores = signalSemaphores;
-        VkSwapchainKHR swapChains[] = { swapChain };
+        VkSwapchainKHR swapChains[] = {swapChain};
         presentInfo.swapchainCount = 1;
         presentInfo.pSwapchains = swapChains;
         presentInfo.pImageIndices = &imageIndex;
@@ -1157,8 +1205,8 @@ private:
         region.imageSubresource.mipLevel = 0;
         region.imageSubresource.baseArrayLayer = 0;
         region.imageSubresource.layerCount = 1;
-        region.imageOffset = { 0, 0, 0 };
-        region.imageExtent = { width, height, 1 };
+        region.imageOffset = {0, 0, 0};
+        region.imageExtent = {width, height, 1};
         vkCmdCopyBufferToImage(commandBuffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
         endSingleTimeCommands(commandBuffer);
     }
@@ -1319,7 +1367,6 @@ private:
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingBufferMemory, nullptr);
         createTextPipeline();
-        textObjects.push_back({"", glm::vec3(1.0f), {50.0f, 50.0f}, 0.8f});
     }
     void createUIResources(){
         std::vector<uint32_t> uiIndices = {0, 1, 2, 2, 3, 0};
@@ -1354,7 +1401,26 @@ private:
             createBuffer(vertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uiObject.second.vertexBuffer, uiObject.second.vertexBufferMemory);
             vkMapMemory(device, uiObject.second.vertexBufferMemory, 0, vertexBufferSize, 0, &uiObject.second.vertexBufferMapped);
             memcpy(uiObject.second.vertexBufferMapped, uiVertices.data(), vertexBufferSize);
-            vkUnmapMemory(device, uiObject.second.vertexBufferMemory);
+        }
+    }
+    void updateUIVertexBuffer(){
+        for(auto &uiObject : uiObjects){
+            float xpos = uiObject.second.position.x;
+            float ypos = uiObject.second.position.y;
+            float w = uiObject.second.size.x;
+            float h = uiObject.second.size.y;
+            float finalX = uiObject.second.anchorLeft ? xpos : (swapChainExtent.width - xpos - w);
+            float ndcX1 = (2.0f * finalX / swapChainExtent.width) - 1.0f;
+            float ndcY1 = (2.0f * ypos / swapChainExtent.height) - 1.0f;
+            float ndcX2 = (2.0f * (finalX + w) / swapChainExtent.width) - 1.0f;
+            float ndcY2 = (2.0f * (ypos + h) / swapChainExtent.height) - 1.0f;
+            std::vector<TextVertex> uiVertices = {
+                {{ndcX1, ndcY1}, {0.0f, 0.0f}},
+                {{ndcX1, ndcY2}, {0.0f, 1.0f}},
+                {{ndcX2, ndcY2}, {1.0f, 1.0f}},
+                {{ndcX2, ndcY1}, {1.0f, 0.0f}}
+            };
+            memcpy(uiObject.second.vertexBufferMapped, uiVertices.data(), sizeof(TextVertex) * 4);
         }
     }
     void createTextDescriptorSetLayout(){
@@ -1387,17 +1453,20 @@ private:
     }
     void updateTextVertexBuffer(){
         std::vector<TextVertex> vertices;
-        currentCharacterCount = 0;
         for(const auto &textObject : textObjects){
+            if(!textObject.enabled) continue;
             if(!textObject.text.empty()){
                 float x = textObject.position.x;
                 float y = textObject.position.y;
                 float scale = textObject.scale;
+                float startX = textObject.anchorLeft ? x : (swapChainExtent.width - x);
+                float baselineBearing = 0.0f;
+                if(Characters.find('A') != Characters.end()) baselineBearing = Characters['A'].bearing.y * scale;
                 for(char c : textObject.text){
                     if(Characters.find(c) == Characters.end()) continue;
                     const Character &ch = Characters[c];
-                    float xpos = x + ch.bearing.x * scale;
-                    float ypos = y - (ch.size.y - ch.bearing.y) * scale;
+                    float xpos = startX + ch.bearing.x * scale;
+                    float ypos = y + baselineBearing - ch.bearing.y * scale;
                     float w = ch.size.x * scale;
                     float h = ch.size.y * scale;
                     float ndcX1 = (2.0f * xpos / swapChainExtent.width) - 1.0f;
@@ -1408,8 +1477,7 @@ private:
                     vertices.push_back({{ndcX1, ndcY2}, {0.0f, 1.0f}});
                     vertices.push_back({{ndcX2, ndcY2}, {1.0f, 1.0f}});
                     vertices.push_back({{ndcX2, ndcY1}, {1.0f, 0.0f}});
-                    x += (ch.advance >> 6) * scale;
-                    currentCharacterCount++;
+                    startX += (ch.advance >> 6) * scale;
                 }
             }
         }
@@ -1752,7 +1820,6 @@ private:
     void renderText(VkCommandBuffer commandBuffer){
         if(textObjects.empty()) return;
         updateTextVertexBuffer();
-        if(currentCharacterCount == 0) return;
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipeline);
         VkDeviceSize offsets[] = {0};
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, &textVertexBuffer, offsets);
@@ -1773,11 +1840,20 @@ private:
     }
     void renderUI(VkCommandBuffer commandBuffer){
         UIPushConstants pushData = {{1.0f, 1.0f, 1.0f}, 1};
+        updateUIVertexBuffer();
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipeline);
+        vkCmdPushConstants(commandBuffer, textPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(UIPushConstants), &pushData);
+        VkDeviceSize offsets[] = {0};
+        const auto &uiObjectWindow = uiObjects.find("uiWindow");
+        if(uiObjectWindow != uiObjects.end() && uiObjectWindow->second.enabled){
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, &uiObjectWindow->second.vertexBuffer, offsets);
+            vkCmdBindIndexBuffer(commandBuffer, uiIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipelineLayout, 0, 1, &uiObjectWindow->second.descriptorSet, 0, nullptr);
+            vkCmdDrawIndexed(commandBuffer, 6, 1, 0, 0, 0);
+        }
         for(const auto &uiObject : uiObjects){
             if(!uiObject.second.enabled) continue;
-            vkCmdPushConstants(commandBuffer, textPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(UIPushConstants), &pushData);
-            VkDeviceSize offsets[] = {0};
+            if(uiObject.first == "uiWindow") continue;
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, &uiObject.second.vertexBuffer, offsets);
             vkCmdBindIndexBuffer(commandBuffer, uiIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipelineLayout, 0, 1, &uiObject.second.descriptorSet, 0, nullptr);
@@ -1859,7 +1935,7 @@ private:
     void createFramebuffers(){
         swapChainFramebuffers.resize(swapChainImageViews.size());
         for(size_t i=0; i<swapChainImageViews.size(); i++){
-            std::array<VkImageView, 3> attachments = { colorImageView, depthImageView, swapChainImageViews[i] };
+            std::array<VkImageView, 3> attachments = {colorImageView, depthImageView, swapChainImageViews[i]};
             VkFramebufferCreateInfo framebufferInfo{};
             framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
             framebufferInfo.renderPass = renderPass;

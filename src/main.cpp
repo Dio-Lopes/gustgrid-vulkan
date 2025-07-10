@@ -300,6 +300,8 @@ private:
         {"arrow/up", {}},
         {"arrow/down", {}},
         {"slider/knob", {}},
+        {"toggle/open", {}},
+        {"toggle/close", {}},
         {"uiWindow", {}}
     };
     std::map<std::string, UIData> uiObjects = {
@@ -311,13 +313,14 @@ private:
         {"pressureCheckbox", {.name = "checkbox/checked", .position = glm::vec2(80.0f, 665.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
         {"fanUp", {.name = "arrow/down", .position = glm::vec2(180.0f, 325.0f), .size = glm::vec2(30.0f, 15.0f), .anchorLeft = false}},
         {"fanDown", {.name = "arrow/up", .position = glm::vec2(180.0f, 340.0f), .size = glm::vec2(30.0f, 15.0f), .anchorLeft = false}},
+        {"uiWindow", {.name = "uiWindow", .position = glm::vec2(50.0f, 50.0f), .size = glm::vec2(400.0f, 700.0f), .anchorLeft = false}},
         {"slider1", {.name = "checkbox/unchecked", .position = glm::vec2(80.0f, 375.0f), .size = glm::vec2(230.0f, 30.0f), .anchorLeft = false}},
         {"slider2", {.name = "checkbox/unchecked", .position = glm::vec2(80.0f, 425.0f), .size = glm::vec2(230.0f, 30.0f), .anchorLeft = false}},
         {"slider3", {.name = "checkbox/unchecked", .position = glm::vec2(80.0f, 475.0f), .size = glm::vec2(230.0f, 30.0f), .anchorLeft = false}},
         {"sliderknob1", {.name = "slider/knob", .position = glm::vec2(80.0f, 375.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
         {"sliderknob2", {.name = "slider/knob", .position = glm::vec2(80.0f, 425.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
         {"sliderknob3", {.name = "slider/knob", .position = glm::vec2(80.0f, 475.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
-        {"uiWindow", {.name = "uiWindow", .position = glm::vec2(50.0f, 50.0f), .size = glm::vec2(400.0f, 700.0f), .anchorLeft = false}}
+        {"uiToggle", {.name = "toggle/close", .position = glm::vec2(470.0f, 50.0f), .size = glm::vec2(40.0f, 40.0f), .anchorLeft = false}}
     };
     float camRadius = 15.0f;
     float camPitch = PI / 12.0f;
@@ -534,27 +537,18 @@ private:
         int backFansEnabled = 0;
         for(int i = 0; i < 3; i++) if(backFanLocations[i] <= 0.0f) backFansEnabled++;
         textObjects[9].text = "Back Fans: " + std::to_string(backFansEnabled);
-        textObjects[10].enabled = backFansEnabled > 0;
-        textObjects[11].enabled = backFansEnabled > 1;
-        textObjects[12].enabled = backFansEnabled > 2;
+        textObjects[10].enabled = backFansEnabled > 0 && showUI;
+        textObjects[11].enabled = backFansEnabled > 1 && showUI;
+        textObjects[12].enabled = backFansEnabled > 2 && showUI;
         uiObjects["sliderknob1"].position.x = 280.0f - (200.0f * (backFanLocations[0] / -5.0f));
         uiObjects["sliderknob2"].position.x = 280.0f - (200.0f * (backFanLocations[1] / -5.0f));
         uiObjects["sliderknob3"].position.x = 280.0f - (200.0f * (backFanLocations[2] / -5.0f));
-        uiObjects["sliderknob1"].enabled = backFansEnabled > 0;
-        uiObjects["sliderknob2"].enabled = backFansEnabled > 1;
-        uiObjects["sliderknob3"].enabled = backFansEnabled > 2;
-        uiObjects["slider1"].enabled = backFansEnabled > 0;
-        uiObjects["slider2"].enabled = backFansEnabled > 1;
-        uiObjects["slider3"].enabled = backFansEnabled > 2;
-        models["gpu"].enabled = gpuEnabled;
-        models["gpufan1"].enabled = gpuEnabled;
-        models["gpufan2"].enabled = gpuEnabled;
-        models["cpufan"].enabled = cpuFanEnabled;
-        models["frontfan"].enabled = frontFanEnabled;
-        models["topfan"].enabled = topFanEnabled;
-        models["fancpu"].enabled = cpuFanEnabled;
-        models["fanfront"].enabled = frontFanEnabled;
-        models["fantop"].enabled = topFanEnabled;
+        uiObjects["sliderknob1"].enabled = backFansEnabled > 0 && showUI;
+        uiObjects["sliderknob2"].enabled = backFansEnabled > 1 && showUI;
+        uiObjects["sliderknob3"].enabled = backFansEnabled > 2 && showUI;
+        uiObjects["slider1"].enabled = backFansEnabled > 0 && showUI;
+        uiObjects["slider2"].enabled = backFansEnabled > 1 && showUI;
+        uiObjects["slider3"].enabled = backFansEnabled > 2 && showUI;
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
         uint32_t imageIndex;
         VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
@@ -1525,6 +1519,7 @@ private:
         poolSize.descriptorCount = static_cast<uint32_t>(uiObjects.size());
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
         poolInfo.poolSizeCount = 1;
         poolInfo.pPoolSizes = &poolSize;
         poolInfo.maxSets = static_cast<uint32_t>(uiObjects.size());
@@ -2165,7 +2160,7 @@ private:
     }
     void setCurrentHoverElement(float scaledMouseX, float scaledMouseY){
         std::vector<std::string> elements = {
-            "gpuCheckbox", "cpuFanCheckbox", "topFanCheckbox", "frontFanCheckbox", "pressureCheckbox", "fanUp", "fanDown", "slider1", "slider2", "slider3"
+            "gpuCheckbox", "cpuFanCheckbox", "topFanCheckbox", "frontFanCheckbox", "pressureCheckbox", "fanUp", "fanDown", "slider1", "slider2", "slider3", "uiToggle"
         };
         for(const auto &element : elements){
             if(uiObjects.find(element) == uiObjects.end()) continue;
@@ -2195,6 +2190,12 @@ private:
         {"frontFanCheckbox", &frontFanEnabled},
         {"pressureCheckbox", &pressureEnabled}
     };
+    std::map<std::string, std::vector<std::string>> uiToModel = {
+        {"gpuCheckbox", {"gpu", "gpufan1", "gpufan2"}},
+        {"cpuFanCheckbox", {"fancpu", "cpufan"}},
+        {"topFanCheckbox", {"fantop", "topfan"}},
+        {"frontFanCheckbox", {"fanfront", "frontfan"}}
+    };
     static void processInput(GLFWwindow* window){
         auto app = reinterpret_cast<GustGrid*>(glfwGetWindowUserPointer(window));
         static bool wasPressed = false;
@@ -2205,6 +2206,9 @@ private:
             if(app->getHoverBoolean.find(hoverElement) != app->getHoverBoolean.end()){
                 *app->getHoverBoolean[hoverElement] = !(*app->getHoverBoolean[hoverElement]);
                 app->uiObjects[hoverElement].name = *app->getHoverBoolean[hoverElement] ? "checkbox/checked" : "checkbox/unchecked";
+                if(app->uiToModel.find(hoverElement) != app->uiToModel.end())
+                    for(const auto &modelName : app->uiToModel[hoverElement])
+                        app->models[modelName].enabled = *app->getHoverBoolean[hoverElement];
                 app->updateUIDescriptorSet(hoverElement);
             } else if(hoverElement == "fanUp"){
                 int currentFanCount = 0;
@@ -2221,6 +2225,21 @@ private:
                 for(int i=0; i<3; i++) if(app->backFanLocations[i]<=0.0f) currentFanCount++;
                 if(currentFanCount==0) return;
                 app->backFanLocations[currentFanCount-1] = 1.0f;
+            } else if(hoverElement == "uiToggle"){
+                app->showUI = !app->showUI;
+                app->uiObjects[hoverElement].name = app->showUI ? "toggle/close" : "toggle/open";
+                app->updateUIDescriptorSet(hoverElement);
+                for(int i=4; i<14; i++) app->textObjects[i].enabled = app->showUI;
+                app->uiObjects["uiToggle"].position.x = app->showUI ? 470.0f : 25.0f;
+                app->uiObjects["gpuCheckbox"].enabled = app->showUI;
+                app->uiObjects["cpuFanCheckbox"].enabled = app->showUI;
+                app->uiObjects["topFanCheckbox"].enabled = app->showUI;
+                app->uiObjects["frontFanCheckbox"].enabled = app->showUI;
+                app->uiObjects["pressureCheckbox"].enabled = app->showUI;
+                app->uiObjects["fanUp"].enabled = app->showUI;
+                app->uiObjects["fanDown"].enabled = app->showUI;
+                app->uiObjects["uiWindow"].enabled = app->showUI;
+                app->hoverElement = "";
             } else if(hoverElement == "slider1" || hoverElement == "slider2" || hoverElement == "slider3") return;
         }
         wasPressed = isPressed;
@@ -2242,15 +2261,15 @@ private:
             app->lastMouseX = xposFloat;
             app->lastMouseY = yposFloat;
             app->firstMouse = true;
-            if(app->showUI) app->setCurrentHoverElement(scaledMouseX, scaledMouseY);
+            app->setCurrentHoverElement(scaledMouseX, scaledMouseY);
             return;
         }
         if(app->firstMouse){
             app->lastMouseX = xposFloat;
             app->lastMouseY = yposFloat;
             app->firstMouse = false;
-        } else{
-            if(app->showUI) app->setCurrentHoverElement(scaledMouseX, scaledMouseY);
+        } else if(app->showUI) {
+            app->setCurrentHoverElement(scaledMouseX, scaledMouseY);
             if(app->hoverElement == "slider1" || app->hoverElement == "slider2" || app->hoverElement == "slider3"){
                 for(int i=0; i<3; i++) if(app->hoverElement == "slider" + std::to_string(i+1) && app->backFanLocations[i] > 0.0f) return;
                 for(int i=0; i<3; i++) if(app->hoverElement == "slider" + std::to_string(i+1)){
@@ -2262,6 +2281,9 @@ private:
                     return;
                 }
             } else if(app->hoverElement != "") return;
+        } else{
+            app->setCurrentHoverElement(scaledMouseX, scaledMouseY);
+            if(app->hoverElement == "uiToggle") return;
         }
         float xOffset = (xposFloat - app->lastMouseX) * app->mouseSensitivity;
         float yOffset = (app->lastMouseY - yposFloat) * app->mouseSensitivity;

@@ -147,6 +147,11 @@ struct ModelData{
     bool enabled = true;
     bool loaded = false;
 };
+struct TextureData {
+    VkImage image;
+    VkImageView imageView;
+    VkDeviceMemory imageMemory;
+};
 struct ModelOrientation {
     glm::vec3 position = glm::vec3(0.0f);
     glm::vec3 rotation = glm::vec3(0.0f);
@@ -261,6 +266,8 @@ private:
     bool topFanEnabled = true;
     bool pressureEnabled = true;
     float backFanLocations[3] = {0.0f, -2.5f, 1.0f};
+    bool showUI = true;
+    std::string hoverElement = "";
     std::map<std::string, ModelData> models = {
         {"case", {}},
         {"shield", {}},
@@ -286,6 +293,15 @@ private:
         {"fanback2", {}},
         {"fanback3", {}},
     };
+    std::map<std::string, TextureData> textureAtlas = {
+        {"thermalmap", {}},
+        {"checkbox/checked", {}},
+        {"checkbox/unchecked", {}},
+        {"arrow/up", {}},
+        {"arrow/down", {}},
+        {"slider/knob", {}},
+        {"uiWindow", {}}
+    };
     std::map<std::string, UIData> uiObjects = {
         {"thermalmap", {.name = "thermalmap", .position = glm::vec2(50.0f, 700.0f), .size = glm::vec2(30.0f, -500.0f)}},
         {"gpuCheckbox", {.name = "checkbox/checked", .position = glm::vec2(80.0f, 125.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
@@ -293,8 +309,8 @@ private:
         {"cpuFanCheckbox", {.name = "checkbox/checked", .position = glm::vec2(80.0f, 225.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
         {"frontFanCheckbox", {.name = "checkbox/checked", .position = glm::vec2(80.0f, 275.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
         {"pressureCheckbox", {.name = "checkbox/checked", .position = glm::vec2(80.0f, 665.0f), .size = glm::vec2(30.0f, 30.0f), .anchorLeft = false}},
-        {"fanUp", {.name = "arrow/up", .position = glm::vec2(180.0f, 340.0f), .size = glm::vec2(30.0f, -15.0f), .anchorLeft = false}},
-        {"fanDown", {.name = "arrow/down", .position = glm::vec2(180.0f, 355.0f), .size = glm::vec2(30.0f, -15.0f), .anchorLeft = false}},
+        {"fanUp", {.name = "arrow/down", .position = glm::vec2(180.0f, 325.0f), .size = glm::vec2(30.0f, 15.0f), .anchorLeft = false}},
+        {"fanDown", {.name = "arrow/up", .position = glm::vec2(180.0f, 340.0f), .size = glm::vec2(30.0f, 15.0f), .anchorLeft = false}},
         {"slider1", {.name = "checkbox/unchecked", .position = glm::vec2(80.0f, 375.0f), .size = glm::vec2(230.0f, 30.0f), .anchorLeft = false}},
         {"slider2", {.name = "checkbox/unchecked", .position = glm::vec2(80.0f, 425.0f), .size = glm::vec2(230.0f, 30.0f), .anchorLeft = false}},
         {"slider3", {.name = "checkbox/unchecked", .position = glm::vec2(80.0f, 475.0f), .size = glm::vec2(230.0f, 30.0f), .anchorLeft = false}},
@@ -390,7 +406,7 @@ private:
         createTextDescriptorPool();
         createTextDescriptorSets();
         createTextResources();
-        prepareUIElements();
+        prepareTextureAtlas();
         createUIDescriptorSetLayout();
         createUIDescriptorPool();
         createUIDescriptorSets();
@@ -401,6 +417,7 @@ private:
     void mainLoop(){
         while(!glfwWindowShouldClose(window)){
             glfwPollEvents();
+            processInput(window);
             drawFrame();
         }
         vkDeviceWaitIdle(device);
@@ -445,11 +462,13 @@ private:
         }
         for(auto &uiObject : uiObjects){
             if(uiObject.second.vertexBufferMapped) vkUnmapMemory(device, uiObject.second.vertexBufferMemory);
-            vkDestroyImageView(device, uiObject.second.textureImageView, nullptr);
-            vkDestroyImage(device, uiObject.second.textureImage, nullptr);
-            vkFreeMemory(device, uiObject.second.textureImageMemory, nullptr);
             vkDestroyBuffer(device, uiObject.second.vertexBuffer, nullptr);
             vkFreeMemory(device, uiObject.second.vertexBufferMemory, nullptr);
+        }
+        for(auto &texture : textureAtlas){
+            vkDestroyImageView(device, texture.second.imageView, nullptr);
+            vkDestroyImage(device, texture.second.image, nullptr);
+            vkFreeMemory(device, texture.second.imageMemory, nullptr);
         }
         vkDestroyDescriptorSetLayout(device, uiDescriptorSetLayout, nullptr);
         vkDestroyDescriptorPool(device, uiDescriptorPool, nullptr);
@@ -527,11 +546,15 @@ private:
         uiObjects["slider1"].enabled = backFansEnabled > 0;
         uiObjects["slider2"].enabled = backFansEnabled > 1;
         uiObjects["slider3"].enabled = backFansEnabled > 2;
-        uiObjects["gpuCheckbox"].name = gpuEnabled ? "checkbox/checked" : "checkbox/unchecked";
-        uiObjects["topFanCheckbox"].name = topFanEnabled ? "checkbox/checked" : "checkbox/unchecked";
-        uiObjects["cpuFanCheckbox"].name = cpuFanEnabled ? "checkbox/checked" : "checkbox/unchecked";
-        uiObjects["frontFanCheckbox"].name = frontFanEnabled ? "checkbox/checked" : "checkbox/unchecked";
-        uiObjects["pressureCheckbox"].name = pressureEnabled ? "checkbox/checked" : "checkbox/unchecked";
+        models["gpu"].enabled = gpuEnabled;
+        models["gpufan1"].enabled = gpuEnabled;
+        models["gpufan2"].enabled = gpuEnabled;
+        models["cpufan"].enabled = cpuFanEnabled;
+        models["frontfan"].enabled = frontFanEnabled;
+        models["topfan"].enabled = topFanEnabled;
+        models["fancpu"].enabled = cpuFanEnabled;
+        models["fanfront"].enabled = frontFanEnabled;
+        models["fantop"].enabled = topFanEnabled;
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
         uint32_t imageIndex;
         VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
@@ -1536,6 +1559,7 @@ private:
     }
     void createUIDescriptorSets(){
         for(auto &ui : uiObjects){
+            TextureData &textureData = textureAtlas[ui.second.name];
             VkDescriptorSetAllocateInfo allocInfo{};
             allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
             allocInfo.descriptorPool = uiDescriptorPool;
@@ -1546,7 +1570,7 @@ private:
                 throw std::runtime_error("Failed to allocate UI descriptor sets!");
             VkDescriptorImageInfo imageInfo{};
             imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            imageInfo.imageView = ui.second.textureImageView;
+            imageInfo.imageView = textureData.imageView;
             imageInfo.sampler = textureSampler;
             VkWriteDescriptorSet descriptorWrite{};
             descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1560,11 +1584,28 @@ private:
             ui.second.descriptorSet = descriptorSet;
         }
     }
-    void prepareUIElements(){
-        for(auto &ui : uiObjects){
+    void updateUIDescriptorSet(std::string name){
+        auto &ui = uiObjects[name];
+        TextureData &textureData = textureAtlas[ui.name];
+        VkDescriptorImageInfo imageInfo{};
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.imageView = textureData.imageView;
+        imageInfo.sampler = textureSampler;
+        VkWriteDescriptorSet descriptorWrite{};
+        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrite.dstSet = ui.descriptorSet;
+        descriptorWrite.dstBinding = 0;
+        descriptorWrite.dstArrayElement = 0;
+        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptorWrite.descriptorCount = 1;
+        descriptorWrite.pImageInfo = &imageInfo;
+        vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+    }
+    void prepareTextureAtlas(){
+        for(auto &texture : textureAtlas){
             stbi_set_flip_vertically_on_load(true);
             int texWidth, texHeight, texChannels;
-            std::string texturePath = "src/textures/ui/" + ui.second.name + ".png";
+            std::string texturePath = "src/textures/ui/" + texture.first + ".png";
             stbi_uc* pixels = stbi_load(texturePath.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
             VkDeviceSize imageSize = texWidth * texHeight * 4;
             if(!pixels) throw std::runtime_error("Failed to load texture image!");
@@ -1584,9 +1625,9 @@ private:
             transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             vkDestroyBuffer(device, stagingBuffer, nullptr);
             vkFreeMemory(device, stagingBufferMemory, nullptr);
-            ui.second.textureImage = textureImage;
-            ui.second.textureImageMemory = textureImageMemory;
-            createTextureImageView(VK_FORMAT_R8G8B8A8_SRGB, textureImage, ui.second.textureImageView);
+            texture.second.image = textureImage;
+            texture.second.imageMemory = textureImageMemory;
+            createTextureImageView(VK_FORMAT_R8G8B8A8_SRGB, textureImage, texture.second.imageView);
         }
     }
     void createUniformBuffers(){
@@ -2122,20 +2163,105 @@ private:
         }
         return true;
     }
+    void setCurrentHoverElement(float scaledMouseX, float scaledMouseY){
+        std::vector<std::string> elements = {
+            "gpuCheckbox", "cpuFanCheckbox", "topFanCheckbox", "frontFanCheckbox", "pressureCheckbox", "fanUp", "fanDown", "slider1", "slider2", "slider3"
+        };
+        for(const auto &element : elements){
+            if(uiObjects.find(element) == uiObjects.end()) continue;
+            const auto &uiObj = uiObjects[element];
+            float actualX = uiObj.anchorLeft ? uiObj.position.x : (swapChainExtent.width - uiObj.position.x - uiObj.size.x);
+            float actualY = uiObj.position.y;
+            if(scaledMouseX >= actualX && scaledMouseX <= actualX + uiObj.size.x
+            && scaledMouseY >= actualY && scaledMouseY <= actualY + uiObj.size.y){
+                hoverElement = element;
+                return;
+            }
+        }
+        const auto &uiWindow = uiObjects["uiWindow"];
+        float actualX = uiWindow.anchorLeft ? uiWindow.position.x : (swapChainExtent.width - uiWindow.position.x - uiWindow.size.x);
+        float actualY = uiWindow.position.y;
+        if(scaledMouseX >= actualX && scaledMouseX <= actualX + uiWindow.size.x
+        && scaledMouseY >= actualY && scaledMouseY <= actualY + uiWindow.size.y){
+            hoverElement = "uiWindow";
+            return;
+        }
+        hoverElement = "";
+    }
+    std::map<std::string, bool*> getHoverBoolean = {
+        {"gpuCheckbox", &gpuEnabled},
+        {"cpuFanCheckbox", &cpuFanEnabled},
+        {"topFanCheckbox", &topFanEnabled},
+        {"frontFanCheckbox", &frontFanEnabled},
+        {"pressureCheckbox", &pressureEnabled}
+    };
+    static void processInput(GLFWwindow* window){
+        auto app = reinterpret_cast<GustGrid*>(glfwGetWindowUserPointer(window));
+        static bool wasPressed = false;
+        bool isPressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        if(isPressed && !wasPressed){
+            auto hoverElement = app->hoverElement;
+            if(hoverElement.empty()) return;
+            if(app->getHoverBoolean.find(hoverElement) != app->getHoverBoolean.end()){
+                *app->getHoverBoolean[hoverElement] = !(*app->getHoverBoolean[hoverElement]);
+                app->uiObjects[hoverElement].name = *app->getHoverBoolean[hoverElement] ? "checkbox/checked" : "checkbox/unchecked";
+                app->updateUIDescriptorSet(hoverElement);
+            } else if(hoverElement == "fanUp"){
+                int currentFanCount = 0;
+                for(int i=0; i<3; i++) if(app->backFanLocations[i]<=0.0f) currentFanCount++;
+                if(currentFanCount==3) return;
+                else if(currentFanCount==0) app->backFanLocations[0] = 0.0f;
+                else if(currentFanCount==1){
+                    app->backFanLocations[0] = std::max(app->backFanLocations[0], -2.5f);
+                    app->backFanLocations[1] = app->backFanLocations[0] - 2.5f;
+                }
+                else if(currentFanCount==2) for(int i=0; i<3; i++) app->backFanLocations[i] = i * -2.5f;
+            } else if(hoverElement == "fanDown"){
+                int currentFanCount = 0;
+                for(int i=0; i<3; i++) if(app->backFanLocations[i]<=0.0f) currentFanCount++;
+                if(currentFanCount==0) return;
+                app->backFanLocations[currentFanCount-1] = 1.0f;
+            } else if(hoverElement == "slider1" || hoverElement == "slider2" || hoverElement == "slider3") return;
+        }
+        wasPressed = isPressed;
+        if(!isPressed) app->firstMouse = true;
+    }
     static void mouseCallback(GLFWwindow* window, double xpos, double ypos){
         auto app = reinterpret_cast<GustGrid*>(glfwGetWindowUserPointer(window));
         float xposFloat = static_cast<float>(xpos);
         float yposFloat = static_cast<float>(ypos);
+        int windowWidth, windowHeight;
+        int framebufferWidth, framebufferHeight;
+        glfwGetWindowSize(window, &windowWidth, &windowHeight);
+        glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+        float scaleX = static_cast<float>(framebufferWidth) / static_cast<float>(windowWidth);
+        float scaleY = static_cast<float>(framebufferHeight) / static_cast<float>(windowHeight);
+        float scaledMouseX = xposFloat * scaleX;
+        float scaledMouseY = yposFloat * scaleY;
         if(glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE){
             app->lastMouseX = xposFloat;
             app->lastMouseY = yposFloat;
             app->firstMouse = true;
+            if(app->showUI) app->setCurrentHoverElement(scaledMouseX, scaledMouseY);
             return;
         }
         if(app->firstMouse){
             app->lastMouseX = xposFloat;
             app->lastMouseY = yposFloat;
             app->firstMouse = false;
+        } else{
+            if(app->showUI) app->setCurrentHoverElement(scaledMouseX, scaledMouseY);
+            if(app->hoverElement == "slider1" || app->hoverElement == "slider2" || app->hoverElement == "slider3"){
+                for(int i=0; i<3; i++) if(app->hoverElement == "slider" + std::to_string(i+1) && app->backFanLocations[i] > 0.0f) return;
+                for(int i=0; i<3; i++) if(app->hoverElement == "slider" + std::to_string(i+1)){
+                    app->backFanLocations[i] = -((scaledMouseX - (app->swapChainExtent.width - 310.0f)) / 230.0f) * 5.0f;
+                    if(i<2 && app->backFanLocations[i+1] <= 0.0f && app->backFanLocations[i+1] - app->backFanLocations[i] >= -2.5f) app->backFanLocations[i] = app->backFanLocations[i+1] + 2.5f;
+                    else if(i>0 && app->backFanLocations[i] - app->backFanLocations[i-1] >= -2.5f) app->backFanLocations[i] = app->backFanLocations[i-1] - 2.5f;
+                    if(app->backFanLocations[i] < -5.0f) app->backFanLocations[i] = -5.0f;
+                    else if(app->backFanLocations[i] > 0.0f) app->backFanLocations[i] = 0.0f;
+                    return;
+                }
+            } else if(app->hoverElement != "") return;
         }
         float xOffset = (xposFloat - app->lastMouseX) * app->mouseSensitivity;
         float yOffset = (app->lastMouseY - yposFloat) * app->mouseSensitivity;

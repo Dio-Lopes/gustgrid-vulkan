@@ -28,6 +28,22 @@ const uint32_t HEIGHT = 600;
 
 #define PI 3.14159265358979323846f
 
+#define gridSizeX 64
+#define gridSizeY 256
+#define gridSizeZ 128
+#define worldMinX -2.0f
+#define worldMaxX 2.0f
+#define worldMinY -4.5f
+#define worldMaxY 4.5f
+#define worldMinZ -4.0f
+#define worldMaxZ 4.0f
+#define renderMinX -1.65f
+#define renderMaxX 1.7f
+#define renderMinY -3.0f
+#define renderMaxY 4.22f
+#define renderMinZ -3.4f
+#define renderMaxZ 3.4f
+
 const int MAX_FRAMES_IN_FLIGHT = 2;
 uint32_t currentFrame = 0;
 
@@ -154,6 +170,33 @@ struct TextureData {
     VkImageView imageView;
     VkDeviceMemory imageMemory;
 };
+struct VolumeData {
+    VkImage volumeImage;
+    VkImageView volumeImageView;
+    VkDeviceMemory volumeImageMemory;
+    VkImage temperatureImage;
+    VkImageView temperatureImageView;
+    VkDeviceMemory temperatureImageMemory;
+    std::vector<VkDescriptorSet> descriptorSets;
+    VkBuffer vertexBuffer;
+    VkDeviceMemory vertexBufferMemory;
+    VkBuffer indexBuffer;
+    VkDeviceMemory indexBufferMemory;
+    std::vector<VkBuffer> uniformBuffers;
+    std::vector<VkDeviceMemory> uniformBuffersMemory;
+    std::vector<void*> uniformBuffersMapped;
+};
+struct VolumeUniformBufferObject {
+    alignas(16) glm::mat4 model;
+    alignas(16) glm::mat4 view;
+    alignas(16) glm::mat4 projection;
+    alignas(16) glm::vec3 camPos;
+    alignas(16) glm::vec3 gridSize;
+    alignas(16) glm::vec3 worldMin;
+    alignas(16) glm::vec3 worldMax;
+    alignas(4) int displayPressure = 0;
+    alignas(4) float stepSize;
+};
 struct ModelOrientation {
     glm::vec3 position = glm::vec3(0.0f);
     glm::vec3 rotation = glm::vec3(0.0f);
@@ -225,6 +268,7 @@ private:
     VkDescriptorSetLayout descriptorSetLayout;
     VkDescriptorPool descriptorPool;
     VkSampler textureSampler;
+    VkSampler volumeSampler;
     VkImage depthImage;
     VkDeviceMemory depthImageMemory;
     VkImageView depthImageView;
@@ -262,6 +306,11 @@ private:
     VkDescriptorPool textDescriptorPool;
     VkDescriptorSetLayout uiDescriptorSetLayout;
     VkDescriptorPool uiDescriptorPool;
+    VkPipeline volumePipeline;
+    VkPipelineLayout volumePipelineLayout;
+    VkDescriptorSetLayout volumeDescriptorSetLayout;
+    VkDescriptorPool volumeDescriptorPool;
+    VolumeData volumeData;
     bool gpuEnabled = true;
     bool cpuFanEnabled = true;
     bool frontFanEnabled = true;
@@ -416,6 +465,39 @@ private:
         createUIDescriptorPool();
         createUIDescriptorSets();
         createUIResources();
+        std::vector<float> volData(gridSizeX * gridSizeY * gridSizeZ);
+        std::vector<float> temperatureData(gridSizeX * gridSizeY * gridSizeZ);
+        #pragma omp parallel for collapse(3)
+        for(int z = 0; z < gridSizeZ; z++){
+            for(int y = 0; y < gridSizeY; y++){
+                for(int x = 0; x < gridSizeX; x++){
+                    int index = x + y * gridSizeX + z * gridSizeX * gridSizeY;
+                    float worldX = worldMinX + (x + 0.5f) * (worldMaxX - worldMinX) / gridSizeX;
+                    float worldY = worldMinY + (y + 0.5f) * (worldMaxY - worldMinY) / gridSizeY;
+                    float worldZ = worldMinZ + (z + 0.5f) * (worldMaxZ - worldMinZ) / gridSizeZ;
+                    float distance = sqrt(worldX*worldX + worldY*worldY + worldZ*worldZ);
+                    if(distance < 3.0f) {
+                        volData[index] = 1.0f;
+                        temperatureData[index] = 100.0f;
+                    } else if(distance < 4.5f) {
+                        float falloff = (4.5f - distance) / 0.5f;
+                        volData[index] = falloff * 0.8f;
+                        temperatureData[index] = 25.0f + (75.0f * falloff);
+                    } else {
+                        volData[index] = 0.2f;
+                        temperatureData[index] = 30.0f;
+                    }
+                }
+            }
+        }
+        create3DTexture(gridSizeX, gridSizeY, gridSizeZ, volData.data(), VK_FORMAT_R32_SFLOAT, volumeData.volumeImage, volumeData.volumeImageView, volumeData.volumeImageMemory);
+        create3DTexture(gridSizeX, gridSizeY, gridSizeZ, temperatureData.data(), VK_FORMAT_R32_SFLOAT, volumeData.temperatureImage, volumeData.temperatureImageView, volumeData.temperatureImageMemory);
+        createVolumeGeometry();
+        createVolumeUniformBuffers();
+        createVolumeDescriptorSetLayout();
+        createVolumeDescriptorPool();
+        createVolumePipeline();
+        createVolumeDescriptorSets();
         createCommandBuffers();
         createSyncObjects();
     }
@@ -439,6 +521,7 @@ private:
         vkDestroyDescriptorSetLayout(device, textDescriptorSetLayout, nullptr);
         vkDestroyDescriptorPool(device, textDescriptorPool, nullptr);
         vkDestroySampler(device, textureSampler, nullptr);
+        vkDestroySampler(device, volumeSampler, nullptr);
         vkDestroyDescriptorPool(device, descriptorPool, nullptr);
         for(auto &model : models){
             vkDestroyBuffer(device, model.second.vertexBuffer, nullptr);
@@ -460,6 +543,8 @@ private:
             vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
             vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
             vkDestroyFence(device, inFlightFences[i], nullptr);
+            vkDestroyBuffer(device, volumeData.uniformBuffers[i], nullptr);
+            vkFreeMemory(device, volumeData.uniformBuffersMemory[i], nullptr);
         }
         for(auto &character : Characters){
             vkDestroyImageView(device, character.second.textureImageView, nullptr);
@@ -476,6 +561,20 @@ private:
             vkDestroyImage(device, texture.second.image, nullptr);
             vkFreeMemory(device, texture.second.imageMemory, nullptr);
         }
+        vkDestroyBuffer(device, volumeData.vertexBuffer, nullptr);
+        vkFreeMemory(device, volumeData.vertexBufferMemory, nullptr);
+        vkDestroyBuffer(device, volumeData.indexBuffer, nullptr);
+        vkFreeMemory(device, volumeData.indexBufferMemory, nullptr);
+        vkDestroyImageView(device, volumeData.volumeImageView, nullptr);
+        vkDestroyImage(device, volumeData.volumeImage, nullptr);
+        vkFreeMemory(device, volumeData.volumeImageMemory, nullptr);
+        vkDestroyImageView(device, volumeData.temperatureImageView, nullptr);
+        vkDestroyImage(device, volumeData.temperatureImage, nullptr);
+        vkFreeMemory(device, volumeData.temperatureImageMemory, nullptr);
+        vkDestroyPipeline(device, volumePipeline, nullptr);
+        vkDestroyPipelineLayout(device, volumePipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, volumeDescriptorSetLayout, nullptr);
+        vkDestroyDescriptorPool(device, volumeDescriptorPool, nullptr);
         vkDestroyDescriptorSetLayout(device, uiDescriptorSetLayout, nullptr);
         vkDestroyDescriptorPool(device, uiDescriptorPool, nullptr);
         vkDestroyBuffer(device, uiIndexBuffer, nullptr);
@@ -608,6 +707,17 @@ private:
             ubo.cameraPos = camPos;
             memcpy(model.second.uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
         }
+        VolumeUniformBufferObject vubo{};
+        vubo.worldMin = glm::vec3(worldMinX, worldMinY, worldMinZ);
+        vubo.worldMax = glm::vec3(worldMaxX, worldMaxY, worldMaxZ);
+        vubo.model = glm::mat4(1.0f);
+        vubo.view = view;
+        vubo.projection = proj;
+        vubo.camPos = camPos;
+        vubo.gridSize = glm::vec3(float(gridSizeX), float(gridSizeY), float(gridSizeZ));
+        vubo.displayPressure = pressureEnabled ? 1 : 0;
+        vubo.stepSize = 0.1f;
+        memcpy(volumeData.uniformBuffersMapped[currentImage], &vubo, sizeof(vubo));
     }
     void createSyncObjects(){
         imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
@@ -726,6 +836,115 @@ private:
         vkGetSwapchainImagesKHR(device, swapChain, &imageCount, swapChainImages.data());
         swapChainImageFormat = surfaceFormat.format;
         swapChainExtent = extent;
+    }
+    void createVolumeDescriptorPool(){
+        VkDescriptorPoolSize uboPoolSize{};
+        uboPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        uboPoolSize.descriptorCount = MAX_FRAMES_IN_FLIGHT;
+        VkDescriptorPoolSize volumePoolSize{};
+        volumePoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        volumePoolSize.descriptorCount = MAX_FRAMES_IN_FLIGHT;
+        VkDescriptorPoolSize temperaturePoolSize{};
+        temperaturePoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        temperaturePoolSize.descriptorCount = MAX_FRAMES_IN_FLIGHT;
+        std::array<VkDescriptorPoolSize, 3> poolSizes = {uboPoolSize, volumePoolSize, temperaturePoolSize};
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+        poolInfo.pPoolSizes = poolSizes.data();
+        poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT;
+        if(vkCreateDescriptorPool(device, &poolInfo, nullptr, &volumeDescriptorPool) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create descriptor pool for volume data!");
+    }
+    void createVolumeDescriptorSets(){
+        std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, volumeDescriptorSetLayout);
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = volumeDescriptorPool;
+        allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+        allocInfo.pSetLayouts = layouts.data();
+        volumeData.descriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
+        if(vkAllocateDescriptorSets(device, &allocInfo, volumeData.descriptorSets.data()) != VK_SUCCESS)
+            throw std::runtime_error("Failed to allocate descriptor sets for volume data!");
+        for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
+            VkDescriptorBufferInfo uboBufferInfo{};
+            uboBufferInfo.buffer = volumeData.uniformBuffers[i];
+            uboBufferInfo.offset = 0;
+            uboBufferInfo.range = sizeof(VolumeUniformBufferObject);
+            VkDescriptorImageInfo volumeImageInfo{};
+            volumeImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            volumeImageInfo.imageView = volumeData.volumeImageView;
+            volumeImageInfo.sampler = volumeSampler;
+            VkDescriptorImageInfo tempImageInfo{};
+            tempImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            tempImageInfo.imageView = volumeData.temperatureImageView;
+            tempImageInfo.sampler = volumeSampler;
+            std::array<VkWriteDescriptorSet, 3> descriptorWrites{};
+            descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[0].dstSet = volumeData.descriptorSets[i];
+            descriptorWrites[0].dstBinding = 0;
+            descriptorWrites[0].dstArrayElement = 0;
+            descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            descriptorWrites[0].descriptorCount = 1;
+            descriptorWrites[0].pBufferInfo = &uboBufferInfo;
+            descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[1].dstSet = volumeData.descriptorSets[i];
+            descriptorWrites[1].dstBinding = 1;
+            descriptorWrites[1].dstArrayElement = 0;
+            descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[1].descriptorCount = 1;
+            descriptorWrites[1].pImageInfo = &volumeImageInfo;
+            descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[2].dstSet = volumeData.descriptorSets[i];
+            descriptorWrites[2].dstBinding = 2;
+            descriptorWrites[2].dstArrayElement = 0;
+            descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[2].descriptorCount = 1;
+            descriptorWrites[2].pImageInfo = &tempImageInfo;
+            vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+        }
+    }
+    void createVolumeUniformBuffers(){
+        VkDeviceSize bufferSize = sizeof(VolumeUniformBufferObject);
+        volumeData.uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+        volumeData.uniformBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT);
+        volumeData.uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
+        for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
+            createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, volumeData.uniformBuffers[i], volumeData.uniformBuffersMemory[i]);
+            vkMapMemory(device, volumeData.uniformBuffersMemory[i], 0, bufferSize, 0, &volumeData.uniformBuffersMapped[i]);
+        }
+    }
+    void createVolumeDescriptorSetLayout(){
+        VkDescriptorSetLayoutBinding uboLayoutBinding{};
+        uboLayoutBinding.binding = 0;
+        uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        uboLayoutBinding.descriptorCount = 1;
+        uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        uboLayoutBinding.pImmutableSamplers = nullptr;
+
+        VkDescriptorSetLayoutBinding volumeLayoutBinding{};
+        volumeLayoutBinding.binding = 1;
+        volumeLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        volumeLayoutBinding.descriptorCount = 1;
+        volumeLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        volumeLayoutBinding.pImmutableSamplers = nullptr;
+
+        VkDescriptorSetLayoutBinding temperatureLayoutBinding{};
+        temperatureLayoutBinding.binding = 2;
+        temperatureLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        temperatureLayoutBinding.descriptorCount = 1;
+        temperatureLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        temperatureLayoutBinding.pImmutableSamplers = nullptr;
+
+        std::array<VkDescriptorSetLayoutBinding, 3> bindings = {uboLayoutBinding, volumeLayoutBinding, temperatureLayoutBinding};
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+        layoutInfo.pBindings = bindings.data();
+
+        if(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &volumeDescriptorSetLayout) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create descriptor set layout!");
     }
     void createDescriptorSetLayout(){
         VkDescriptorSetLayoutBinding uboLayoutBinding{};
@@ -847,7 +1066,7 @@ private:
         multisampling.alphaToOneEnable = VK_FALSE;
         VkPipelineColorBlendAttachmentState colorBlendAttachment{};
         colorBlendAttachment.blendEnable = VK_TRUE;
-        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
         colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
@@ -1003,6 +1222,102 @@ private:
         vkDestroyShaderModule(device, fragShaderModule, nullptr);
         vkDestroyShaderModule(device, vertShaderModule, nullptr);
     }
+    void createVolumePipeline(){
+        std::vector<char> vertShaderCode = readFile("src/shaders/compiled/volume.vert.spv");
+        std::vector<char> fragShaderCode = readFile("src/shaders/compiled/volume.frag.spv");
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+        VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertShaderStageInfo.module = vertShaderModule;
+        vertShaderStageInfo.pName = "main";
+        VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageInfo.module = fragShaderModule;
+        fragShaderStageInfo.pName = "main";
+        VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        inputAssembly.primitiveRestartEnable = VK_FALSE;
+        std::vector<VkDynamicState> dynamicStates = {
+            VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR
+        };
+        VkPipelineDynamicStateCreateInfo dynamicState{};
+        dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+        dynamicState.pDynamicStates = dynamicStates.data();
+        VkPipelineViewportStateCreateInfo viewportState{};
+        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo rasterizer{};
+        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE;
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterizer.depthClampEnable = VK_FALSE;
+        rasterizer.rasterizerDiscardEnable = VK_FALSE;
+        VkPipelineMultisampleStateCreateInfo multisampling{};
+        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampling.rasterizationSamples = msaaSamples;
+        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachment.blendEnable = VK_TRUE;
+        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        VkPipelineColorBlendStateCreateInfo colorBlending{};
+        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlending.logicOpEnable = VK_FALSE;
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &colorBlendAttachment;
+        VkPipelineDepthStencilStateCreateInfo depthStencil{};
+        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depthStencil.depthTestEnable = VK_TRUE;
+        depthStencil.depthWriteEnable = VK_FALSE;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &volumeDescriptorSetLayout;
+        if(vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &volumePipelineLayout) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create volume pipeline layout!");
+        VkGraphicsPipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.layout = volumePipelineLayout;
+        pipelineInfo.renderPass = renderPass;
+        pipelineInfo.subpass = 0;
+        if(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &volumePipeline) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create volume graphics pipeline!");
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
+    }
     void createColorResources(){
         VkFormat colorFormat = swapChainImageFormat;
         createImage(swapChainExtent.width, swapChainExtent.height, 1, msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, colorImage, colorImageMemory);
@@ -1127,6 +1442,76 @@ private:
             throw std::runtime_error("Failed to create image view!");
         return imageView;
     }
+    void create3DTexture(uint32_t width, uint32_t height, uint32_t depth, float* volumeData, VkFormat format, VkImage &volumeImage, VkImageView &volumeImageView, VkDeviceMemory &volumeImageMemory){
+        VkDeviceSize elementSize = 1;
+        if(format == VK_FORMAT_R32_SFLOAT) elementSize = 4;
+        VkDeviceSize imageSize = width * height * depth * elementSize;
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingBufferMemory;
+        createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+        void* data;
+        vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
+        memcpy(data, volumeData, static_cast<size_t>(imageSize));
+        vkUnmapMemory(device, stagingBufferMemory);
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_3D;
+        imageInfo.extent.width = width;
+        imageInfo.extent.height = height;
+        imageInfo.extent.depth = depth;
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.format = format;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.flags = 0;
+        if(vkCreateImage(device, &imageInfo, nullptr, &volumeImage) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create 3D texture image!");
+        VkMemoryRequirements memRequirements;
+        vkGetImageMemoryRequirements(device, volumeImage, &memRequirements);
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if(vkAllocateMemory(device, &allocInfo, nullptr, &volumeImageMemory) != VK_SUCCESS)
+            throw std::runtime_error("Failed to allocate 3D texture memory!");
+        vkBindImageMemory(device, volumeImage, volumeImageMemory, 0);
+        transitionImageLayout(volumeImage, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        copy3DBufferToImage(stagingBuffer, volumeImage, width, height, depth);
+        transitionImageLayout(volumeImage, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingBufferMemory, nullptr);
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = volumeImage;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_3D;
+        viewInfo.format = format;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+        if(vkCreateImageView(device, &viewInfo, nullptr, &volumeImageView) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create 3D texture image view!");
+    }
+    void copy3DBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height, uint32_t depth){
+        VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+        VkBufferImageCopy region{};
+        region.bufferOffset = 0;
+        region.bufferRowLength = 0;
+        region.bufferImageHeight = 0;
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.mipLevel = 0;
+        region.imageSubresource.baseArrayLayer = 0;
+        region.imageSubresource.layerCount = 1;
+        region.imageOffset = {0, 0, 0};
+        region.imageExtent = {width, height, depth};
+        vkCmdCopyBufferToImage(commandBuffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        endSingleTimeCommands(commandBuffer);
+    }
     void generateMipmaps(VkImage image, int32_t texWidth, uint32_t texHeight, uint32_t mipLevels){
         VkFormatProperties formatProperties;
         vkGetPhysicalDeviceFormatProperties(physicalDevice, VK_FORMAT_R8G8B8A8_SRGB, &formatProperties);
@@ -1206,6 +1591,12 @@ private:
         samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
         if(vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS)
             throw std::runtime_error("Failed to create texture sampler!");
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.maxLod = 1.0f;
+        if(vkCreateSampler(device, &samplerInfo, nullptr, &volumeSampler) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create volume texture sampler!");
     }
     void createTextureSampler(VkSampler &sampler, uint32_t mipLevels = 1){
         VkSamplerCreateInfo samplerInfo{};
@@ -1404,6 +1795,47 @@ private:
             model.second.vertices = data.vertices;
             model.second.loaded = true;
         }
+    }
+    void createVolumeGeometry(){
+        std::vector<Vertex> cubeVertices = {
+            {{renderMinX, renderMinY,  renderMaxZ}, {0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
+            {{renderMaxX, renderMinY,  renderMaxZ}, {1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
+            {{renderMaxX, renderMaxY, renderMaxZ}, {1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}},
+            {{renderMinX,  renderMaxY, renderMaxZ}, {0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}},
+            {{renderMinX, renderMinY, renderMinZ}, {1.0f, 0.0f}, {0.0f, 0.0f, -1.0f}},
+            {{renderMaxX, renderMinY, renderMinZ}, {0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}},
+            {{renderMaxX, renderMaxY, renderMinZ}, {0.0f, 1.0f}, {0.0f, 0.0f, -1.0f}},
+            {{renderMinX, renderMaxY, renderMinZ}, {1.0f, 1.0f}, {0.0f, 0.0f, -1.0f}}
+        };
+        std::vector<uint32_t> cubeIndices = {
+            0, 1, 2, 2, 3, 0,
+            4, 5, 6, 6, 7, 4,
+            7, 3, 0, 0, 4, 7,
+            1, 5, 6, 6, 2, 1,
+            3, 2, 6, 6, 7, 3,
+            0, 1, 5, 5, 4, 0
+        };
+        VkDeviceSize bufferSize = sizeof(cubeVertices[0]) * cubeVertices.size();
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingBufferMemory;
+        createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+        void* data;
+        vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data);
+        memcpy(data, cubeVertices.data(), (size_t) bufferSize);
+        vkUnmapMemory(device, stagingBufferMemory);
+        createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, volumeData.vertexBuffer, volumeData.vertexBufferMemory);
+        copyBuffer(stagingBuffer, volumeData.vertexBuffer, bufferSize);
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingBufferMemory, nullptr);
+        VkDeviceSize indexBufferSize = sizeof(cubeIndices[0]) * cubeIndices.size();
+        createBuffer(indexBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+        vkMapMemory(device, stagingBufferMemory, 0, indexBufferSize, 0, &data);
+        memcpy(data, cubeIndices.data(), (size_t) indexBufferSize);
+        vkUnmapMemory(device, stagingBufferMemory);
+        createBuffer(indexBufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, volumeData.indexBuffer, volumeData.indexBufferMemory);
+        copyBuffer(stagingBuffer, volumeData.indexBuffer, indexBufferSize);
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingBufferMemory, nullptr);
     }
     void createVertexBuffer(){
         std::vector<std::string> modelNames;
@@ -1927,6 +2359,14 @@ private:
         vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &models["shield"].descriptorSets[currentFrame], 0, nullptr);
         vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(models["shield"].indices.size()), 1, 0, 0, 0);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, volumePipeline);
+        VkBuffer volumeVertexBuffer = volumeData.vertexBuffer;
+        VkBuffer volumeIndexBuffer = volumeData.indexBuffer;
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, &volumeVertexBuffer, offsets);
+        vkCmdBindIndexBuffer(commandBuffer, volumeIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, volumePipelineLayout, 0, 1, &volumeData.descriptorSets[currentFrame], 0, nullptr);
+        vkCmdDrawIndexed(commandBuffer, 36, 1, 0, 0, 0);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
         vertexBuffer = models["glass"].vertexBuffer;
         indexBuffer = models["glass"].indexBuffer;
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, offsets);

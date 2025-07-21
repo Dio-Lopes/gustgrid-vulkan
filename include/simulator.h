@@ -1,0 +1,44 @@
+#define GLFW_INCLUDE_VULKAN
+#include <glfw/include/GLFW/glfw3.h>
+#define GLM_FORCE_RADIANS
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <iostream>
+#include <vector>
+#include <cstring>
+#include <map>
+#define maxFans 8
+class VolumeSimulator {
+public:
+    struct ComputeKernel {
+        VkPipeline pipeline;
+        VkPipelineLayout pipelineLayout;
+        VkShaderModule shaderModule;
+        std::string name;
+        glm::uvec3 workgroupSize;
+        bool needsBarrier;
+    };
+    std::map<std::string, ComputeKernel> kernels;
+    struct ComputePushConstants {
+        alignas(16) glm::vec3 gridSize;
+        alignas(16) glm::vec3 worldMin;
+        alignas(16) glm::vec3 worldMax;
+        alignas(16) glm::vec3 cellSize;
+        alignas(4) float deltaTime;
+        alignas(4) uint32_t numFans;
+        alignas(16) glm::vec3 fanPositions[maxFans];
+        alignas(16) glm::vec3 fanDirections[maxFans];
+    };
+    VolumeSimulator(VkDevice device, VkCommandPool commandPool, VkQueue computeQueue, VkPhysicalDevice physicalDevice);
+    ~VolumeSimulator();
+    void initialize(VkDescriptorSetLayout descriptorSetLayout, VkDescriptorPool descriptorPool);
+    void cleanup();
+    void addKernel(const std::string &name, const std::string &shaderPath, glm::uvec3 workgroupSize = glm::uvec3(8, 8, 8), bool needsBarrier = true);
+    VkImageView getVolumeImageView();
+    VkImageView getTemperatureImageView();
+    VkSemaphore dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants = {});
+    void initSimulation(int numCells);
+    void updateDescriptorSetsWithBuffers();
+    void cleanupSimulation();
+};

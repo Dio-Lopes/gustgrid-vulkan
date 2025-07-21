@@ -1,4 +1,5 @@
 #define GLFW_INCLUDE_VULKAN
+#include <simulator.h>
 #include <glfw/include/GLFW/glfw3.h>
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -43,6 +44,10 @@ const uint32_t HEIGHT = 600;
 #define renderMaxY 4.22f
 #define renderMinZ -3.4f
 #define renderMaxZ 3.4f
+#define cellSizeX ((worldMaxX - worldMinX) / gridSizeX)
+#define cellSizeY ((worldMaxY - worldMinY) / gridSizeY)
+#define cellSizeZ ((worldMaxZ - worldMinZ) / gridSizeZ)
+#define maxFans 8
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
 uint32_t currentFrame = 0;
@@ -311,6 +316,9 @@ private:
     VkDescriptorSetLayout volumeDescriptorSetLayout;
     VkDescriptorPool volumeDescriptorPool;
     VolumeData volumeData;
+    VolumeSimulator* volumeSimulator;
+    VkDescriptorSetLayout computeDescriptorSetLayout;
+    VkDescriptorPool computeDescriptorPool;
     bool gpuEnabled = true;
     bool cpuFanEnabled = true;
     bool frontFanEnabled = true;
@@ -465,33 +473,11 @@ private:
         createUIDescriptorPool();
         createUIDescriptorSets();
         createUIResources();
-        std::vector<float> volData(gridSizeX * gridSizeY * gridSizeZ);
-        std::vector<float> temperatureData(gridSizeX * gridSizeY * gridSizeZ);
-        #pragma omp parallel for collapse(3)
-        for(int z = 0; z < gridSizeZ; z++){
-            for(int y = 0; y < gridSizeY; y++){
-                for(int x = 0; x < gridSizeX; x++){
-                    int index = x + y * gridSizeX + z * gridSizeX * gridSizeY;
-                    float worldX = worldMinX + (x + 0.5f) * (worldMaxX - worldMinX) / gridSizeX;
-                    float worldY = worldMinY + (y + 0.5f) * (worldMaxY - worldMinY) / gridSizeY;
-                    float worldZ = worldMinZ + (z + 0.5f) * (worldMaxZ - worldMinZ) / gridSizeZ;
-                    float distance = sqrt(worldX*worldX + worldY*worldY + worldZ*worldZ);
-                    if(distance < 3.0f) {
-                        volData[index] = 1.0f;
-                        temperatureData[index] = 100.0f;
-                    } else if(distance < 4.5f) {
-                        float falloff = (4.5f - distance) / 0.5f;
-                        volData[index] = falloff * 0.8f;
-                        temperatureData[index] = 25.0f + (75.0f * falloff);
-                    } else {
-                        volData[index] = 0.2f;
-                        temperatureData[index] = 30.0f;
-                    }
-                }
-            }
-        }
-        create3DTexture(gridSizeX, gridSizeY, gridSizeZ, volData.data(), VK_FORMAT_R32_SFLOAT, volumeData.volumeImage, volumeData.volumeImageView, volumeData.volumeImageMemory);
-        create3DTexture(gridSizeX, gridSizeY, gridSizeZ, temperatureData.data(), VK_FORMAT_R32_SFLOAT, volumeData.temperatureImage, volumeData.temperatureImageView, volumeData.temperatureImageMemory);
+        volumeSimulator = new VolumeSimulator(device, commandPool, graphicsQueue, physicalDevice);
+        volumeSimulator->initialize(computeDescriptorSetLayout, computeDescriptorPool);
+        int numCells = gridSizeX * gridSizeY * gridSizeZ;
+        volumeSimulator->initSimulation(numCells);
+        volumeSimulator->addKernel("velocityUpdate", "src/shaders/compiled/velocityupdate.comp.spv");
         createVolumeGeometry();
         createVolumeUniformBuffers();
         createVolumeDescriptorSetLayout();
@@ -663,11 +649,19 @@ private:
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);
         recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
         updateUniformBuffer(currentFrame);
+        VkSemaphore computeSemaphore = updateVolumeTextures();
+        updateVolumeDescriptorSets();
+        VkSemaphore waitSemaphores[] = {
+            imageAvailableSemaphores[currentFrame],
+            computeSemaphore
+        };
+        VkPipelineStageFlags waitStages[] = {
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+        };
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
-        VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-        submitInfo.waitSemaphoreCount = 1;
+        submitInfo.waitSemaphoreCount = 2;
         submitInfo.pWaitSemaphores = waitSemaphores;
         submitInfo.pWaitDstStageMask = waitStages;
         submitInfo.commandBufferCount = 1;
@@ -1453,7 +1447,7 @@ private:
         vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
         memcpy(data, volumeData, static_cast<size_t>(imageSize));
         vkUnmapMemory(device, stagingBufferMemory);
-        VkImageCreateInfo imageInfo{};
+        VkImageCreateInfo imageInfo{}; 
         imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imageInfo.imageType = VK_IMAGE_TYPE_3D;
         imageInfo.extent.width = width;
@@ -1464,7 +1458,7 @@ private:
         imageInfo.format = format;
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imageInfo.flags = 0;
@@ -1479,9 +1473,8 @@ private:
         if(vkAllocateMemory(device, &allocInfo, nullptr, &volumeImageMemory) != VK_SUCCESS)
             throw std::runtime_error("Failed to allocate 3D texture memory!");
         vkBindImageMemory(device, volumeImage, volumeImageMemory, 0);
-        transitionImageLayout(volumeImage, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        transitionImageLayout(volumeImage, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
         copy3DBufferToImage(stagingBuffer, volumeImage, width, height, depth);
-        transitionImageLayout(volumeImage, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingBufferMemory, nullptr);
         VkImageViewCreateInfo viewInfo{};
@@ -1836,6 +1829,44 @@ private:
         copyBuffer(stagingBuffer, volumeData.indexBuffer, indexBufferSize);
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingBufferMemory, nullptr);
+    }
+    VkSemaphore updateVolumeTextures(){
+        VolumeSimulator::ComputePushConstants pushConstants;
+        pushConstants.gridSize = glm::vec3(gridSizeX, gridSizeY, gridSizeZ);
+        pushConstants.worldMin = glm::vec3(worldMinX, worldMinY, worldMinZ);
+        pushConstants.worldMax = glm::vec3(worldMaxX, worldMaxY, worldMaxZ);
+        pushConstants.cellSize = glm::vec3(cellSizeX, cellSizeY, cellSizeZ);
+        pushConstants.deltaTime = 1.0f / 60.0f; // 60 FPS
+        pushConstants.numFans = 3;
+        pushConstants.fanPositions[0] = glm::vec3(0.0f, backFanLocations[0], 0.0f);
+        pushConstants.fanPositions[1] = glm::vec3(0.0f, backFanLocations[1], 0.0f);
+        pushConstants.fanPositions[2] = glm::vec3(0.0f, backFanLocations[2], 0.0f);
+        pushConstants.fanDirections[0] = glm::vec3(1.0, 0.0, 0.0);
+        pushConstants.fanDirections[1] = glm::vec3(1.0, 0.0, 0.0);
+        pushConstants.fanDirections[2] = glm::vec3(1.0, 0.0, 0.0);
+        return volumeSimulator->dispatchKernel("velocityUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), pushConstants);
+    }
+    void updateVolumeDescriptorSets(){
+        VkDescriptorImageInfo volumeImageInfo{};
+        volumeImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        volumeImageInfo.imageView = volumeSimulator->getVolumeImageView();
+        volumeImageInfo.sampler = volumeSampler;
+        VkDescriptorImageInfo temperatureImageInfo{};
+        temperatureImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        temperatureImageInfo.imageView = volumeSimulator->getTemperatureImageView();
+        temperatureImageInfo.sampler = volumeSampler;
+        VkWriteDescriptorSet descriptorWrite{};
+        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrite.dstSet = volumeData.descriptorSets[currentFrame];
+        descriptorWrite.dstBinding = 0;
+        descriptorWrite.dstArrayElement = 0;
+        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptorWrite.descriptorCount = 1;
+        descriptorWrite.pImageInfo = &volumeImageInfo;
+        vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+        descriptorWrite.dstBinding = 1;
+        descriptorWrite.pImageInfo = &temperatureImageInfo;
+        vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
     }
     void createVertexBuffer(){
         std::vector<std::string> modelNames;

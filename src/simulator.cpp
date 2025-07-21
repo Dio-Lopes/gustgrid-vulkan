@@ -1,0 +1,598 @@
+#define GLFW_INCLUDE_VULKAN
+#include <glfw/include/GLFW/glfw3.h>
+#define GLM_FORCE_RADIANS
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <iostream>
+#include <vector>
+#include <cstring>
+#include <cstdlib>
+#include <map>
+#include <unordered_set>
+#include <limits>
+#include <fstream>
+#include <algorithm>
+#include <array>
+
+#define gridSizeX 64
+#define gridSizeY 256
+#define gridSizeZ 128
+#define worldMinX -2.0f
+#define worldMaxX 2.0f
+#define worldMinY -4.5f
+#define worldMaxY 4.5f
+#define worldMinZ -4.0f
+#define worldMaxZ 4.0f
+#define maxFans 8
+
+class VulkanMemoryPool {
+private:
+    struct Block {
+        VkBuffer buffer;
+        VkDeviceMemory memory;
+        size_t size;
+        bool inUse;
+        void* mappedData;
+        Block(VkBuffer buf, VkDeviceMemory mem, size_t sz)
+            : buffer(buf), memory(mem), size(sz), inUse(false), mappedData(nullptr) {}
+    };
+    std::vector<Block> blocks;
+    std::unordered_set<VkBuffer> allocatedBuffers;
+    VkDevice device;
+    VkPhysicalDevice physicalDevice;
+    uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties){
+        VkPhysicalDeviceMemoryProperties memProperties;
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+        for(uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
+            if((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
+                return i;
+        throw std::runtime_error("Failed to find suitable memory type");
+    }
+public:
+    VulkanMemoryPool(VkDevice device, VkPhysicalDevice physicalDevice)
+        : device(device), physicalDevice(physicalDevice) {}
+    ~VulkanMemoryPool(){
+        for(auto& block : blocks){
+            if(block.mappedData) vkUnmapMemory(device, block.memory);
+            vkDestroyBuffer(device, block.buffer, nullptr);
+            vkFreeMemory(device, block.memory, nullptr);
+        }
+    }
+    VkBuffer allocate(size_t size, VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT){
+        size = ((size + 255) / 256) * 256;
+        for(auto& block : blocks){
+            if(!block.inUse && block.size >= size){
+                block.inUse = true;
+                allocatedBuffers.insert(block.buffer);
+                return block.buffer;
+            }
+        }
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = size;
+        bufferInfo.usage = usage;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VkBuffer newBuffer;
+        if(vkCreateBuffer(device, &bufferInfo, nullptr, &newBuffer) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create buffer");
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(device, newBuffer, &memRequirements);
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
+        VkDeviceMemory newMemory;
+        if(vkAllocateMemory(device, &allocInfo, nullptr, &newMemory) != VK_SUCCESS)
+            throw std::runtime_error("Failed to allocate buffer memory");
+        if(vkBindBufferMemory(device, newBuffer, newMemory, 0) != VK_SUCCESS)
+            throw std::runtime_error("Failed to bind buffer memory");
+        blocks.emplace_back(newBuffer, newMemory, size);
+        blocks.back().inUse = true;
+        allocatedBuffers.insert(newBuffer);
+        return newBuffer;
+    }
+    void deallocate(VkBuffer buffer){
+        if(allocatedBuffers.find(buffer) == allocatedBuffers.end())
+            throw std::runtime_error("Buffer not found in memory pool");
+        for(auto& block : blocks){
+            if(block.buffer == buffer){
+                block.inUse = false;
+                allocatedBuffers.erase(buffer);
+                if(block.mappedData){
+                    vkUnmapMemory(device, block.memory);
+                    block.mappedData = nullptr;
+                }
+                return;
+            }
+        }
+    }
+    static VulkanMemoryPool &getInstance(VkDevice device = VK_NULL_HANDLE, VkPhysicalDevice physicalDevice = VK_NULL_HANDLE){
+        static std::unique_ptr<VulkanMemoryPool> instance;
+        if(!instance && device != VK_NULL_HANDLE)
+            instance = std::make_unique<VulkanMemoryPool>(device, physicalDevice);
+        return *instance;
+    }
+};
+class SimulationMemory {
+private:
+    VkBuffer d_divergence = VK_NULL_HANDLE;
+    VkBuffer d_pressure = VK_NULL_HANDLE;
+    VkBuffer d_pressureOut = VK_NULL_HANDLE;
+    VkBuffer d_residual = VK_NULL_HANDLE;
+    VkBuffer d_tempVelocity = VK_NULL_HANDLE;
+    VkBuffer d_velocity = VK_NULL_HANDLE;
+    VkBuffer d_speed = VK_NULL_HANDLE;
+    VkBuffer d_temperature = VK_NULL_HANDLE;
+    VkBuffer d_pressureTemp = VK_NULL_HANDLE;
+    VkBuffer d_tempTemperature = VK_NULL_HANDLE;
+    VkBuffer d_tempSum = VK_NULL_HANDLE;
+    VkBuffer d_weightSum = VK_NULL_HANDLE;
+    VkBuffer d_tempSumDiss = VK_NULL_HANDLE;
+    VkBuffer d_fanAccess = VK_NULL_HANDLE;
+    VkBuffer d_solidGrid = VK_NULL_HANDLE;
+    VkImage d_temperatureImage = VK_NULL_HANDLE;
+    VkImage d_volumeImage = VK_NULL_HANDLE;
+    VkImageView d_temperatureImageView = VK_NULL_HANDLE;
+    VkImageView d_volumeImageView = VK_NULL_HANDLE;
+    VkDeviceMemory d_temperatureImageMemory = VK_NULL_HANDLE;
+    VkDeviceMemory d_volumeImageMemory = VK_NULL_HANDLE;
+    int allocatedGridSize = 0;
+    VkDevice device;
+    VkPhysicalDevice physicalDevice;
+    uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties){
+        VkPhysicalDeviceMemoryProperties memProperties;
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+        for(uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
+            if((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
+                return i;
+        throw std::runtime_error("Failed to find suitable memory type");
+    }
+    void create3DStorageImage(uint32_t width, uint32_t height, uint32_t depth, VkFormat format, VkImage &image, VkDeviceMemory &memory, VkImageView &imageView){
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_3D;
+        imageInfo.format = format;
+        imageInfo.extent.width = width;
+        imageInfo.extent.height = height;
+        imageInfo.extent.depth = depth;
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if(vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create 3D storage image");
+        VkMemoryRequirements memRequirements;
+        vkGetImageMemoryRequirements(device, image, &memRequirements);
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if(vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS)
+            throw std::runtime_error("Failed to allocate memory for 3D storage image");
+        if(vkBindImageMemory(device, image, memory, 0) != VK_SUCCESS)
+            throw std::runtime_error("Failed to bind memory to 3D storage image");
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_3D;
+        viewInfo.format = format;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+        if(vkCreateImageView(device, &viewInfo, nullptr, &imageView) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create image view for 3D storage image");
+    }
+public:
+    SimulationMemory(VkDevice device, VkPhysicalDevice physicalDevice)
+        : device(device), physicalDevice(physicalDevice) {}
+    ~SimulationMemory(){
+        cleanup();
+    }
+    void cleanup(){
+        if(allocatedGridSize == 0) return;
+        auto &pool = VulkanMemoryPool::getInstance();
+        pool.deallocate(d_divergence);
+        pool.deallocate(d_pressure);
+        pool.deallocate(d_pressureOut);
+        pool.deallocate(d_residual);
+        pool.deallocate(d_tempVelocity);
+        pool.deallocate(d_velocity);
+        pool.deallocate(d_speed);
+        pool.deallocate(d_temperature);
+        pool.deallocate(d_pressureTemp);
+        pool.deallocate(d_tempTemperature);
+        pool.deallocate(d_tempSum);
+        pool.deallocate(d_weightSum);
+        pool.deallocate(d_tempSumDiss);
+        pool.deallocate(d_fanAccess);
+        pool.deallocate(d_solidGrid);
+        if(d_temperatureImageView != VK_NULL_HANDLE){
+            vkDestroyImageView(device, d_temperatureImageView, nullptr);
+            d_temperatureImageView = VK_NULL_HANDLE;
+        }
+        if(d_temperatureImage != VK_NULL_HANDLE){
+            vkDestroyImage(device, d_temperatureImage, nullptr);
+            vkFreeMemory(device, d_temperatureImageMemory, nullptr);
+            d_temperatureImage = VK_NULL_HANDLE;
+            d_temperatureImageMemory = VK_NULL_HANDLE;
+        }
+        if(d_volumeImageView != VK_NULL_HANDLE){
+            vkDestroyImageView(device, d_volumeImageView, nullptr);
+            d_volumeImageView = VK_NULL_HANDLE;
+        }
+        if(d_volumeImage != VK_NULL_HANDLE){
+            vkDestroyImage(device, d_volumeImage, nullptr);
+            vkFreeMemory(device, d_volumeImageMemory, nullptr);
+            d_volumeImage = VK_NULL_HANDLE;
+            d_volumeImageMemory = VK_NULL_HANDLE;
+        }
+        d_divergence = d_pressure = d_pressureOut = d_residual =
+        d_tempVelocity = d_velocity = d_speed = d_temperature =
+        d_pressureTemp = d_tempTemperature = d_tempSum =
+        d_weightSum = d_tempSumDiss = d_fanAccess = d_solidGrid = VK_NULL_HANDLE;
+        allocatedGridSize = 0;
+    }
+    void ensureAllocated(int numCells){
+        if(allocatedGridSize >= numCells) return;
+        cleanup();
+        auto &pool = VulkanMemoryPool::getInstance();
+        VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        d_divergence = pool.allocate(numCells * sizeof(float), usage, properties);
+        d_pressure = pool.allocate(numCells * sizeof(float), usage, properties);
+        d_pressureOut = pool.allocate(numCells * sizeof(float), usage, properties);
+        d_residual = pool.allocate(numCells * sizeof(float), usage, properties);
+        d_tempVelocity = pool.allocate(numCells * 3 * sizeof(float), usage, properties);
+        d_velocity = pool.allocate(numCells * 3 * sizeof(float), usage, properties);
+        d_speed = pool.allocate(numCells * sizeof(float), usage, properties);
+        d_temperature = pool.allocate(numCells * sizeof(float), usage, properties);
+        d_pressureTemp = pool.allocate(numCells * sizeof(float), usage, properties);
+        d_tempTemperature = pool.allocate(numCells * sizeof(float), usage, properties);
+        d_tempSum = pool.allocate(numCells * sizeof(float), usage, properties);
+        d_weightSum = pool.allocate(numCells * sizeof(float), usage, properties);
+        d_tempSumDiss = pool.allocate(numCells * sizeof(float), usage, properties);
+        d_fanAccess = pool.allocate(numCells * maxFans * sizeof(unsigned char), usage, properties);
+        d_solidGrid = pool.allocate(numCells * sizeof(unsigned char), usage, properties);
+        uint32_t gridX = gridSizeX;
+        uint32_t gridY = gridSizeY;
+        uint32_t gridZ = gridSizeZ;
+        create3DStorageImage(gridX, gridY, gridZ, VK_FORMAT_R32_SFLOAT, d_temperatureImage, d_temperatureImageMemory, d_temperatureImageView);
+        create3DStorageImage(gridX, gridY, gridZ, VK_FORMAT_R32G32B32_SFLOAT, d_volumeImage, d_volumeImageMemory, d_volumeImageView);
+        allocatedGridSize = numCells;
+    }
+    VkBuffer getDivergence() { return d_divergence; }
+    VkBuffer getPressure() { return d_pressure; }
+    VkBuffer getPressureOut() { return d_pressureOut; }
+    VkBuffer getPressureTemp() { return d_pressureTemp; }
+    VkBuffer getResidual() { return d_residual; }
+    VkBuffer getTempVelocity() { return d_tempVelocity; }
+    VkBuffer getVelocity() { return d_velocity; }
+    VkBuffer getSpeed() { return d_speed; }
+    VkBuffer getTemperature() { return d_temperature; }
+    VkBuffer getTempTemperature() { return d_tempTemperature; }
+    VkBuffer getTempSum() { return d_tempSum; }
+    VkBuffer getWeightSum() { return d_weightSum; }
+    VkBuffer getTempSumDiss() { return d_tempSumDiss; }
+    VkBuffer getFanAccess() { return d_fanAccess; }
+    VkBuffer getSolidGrid() { return d_solidGrid; }
+    VkImage getTemperatureImage() { return d_temperatureImage; }
+    VkImage getVolumeImage() { return d_volumeImage; }
+    VkImageView getTemperatureImageView() { return d_temperatureImageView; }
+    VkImageView getVolumeImageView() { return d_volumeImageView; }
+    static SimulationMemory &getInstance(VkDevice device = VK_NULL_HANDLE, VkPhysicalDevice physicalDevice = VK_NULL_HANDLE){
+        static std::unique_ptr<SimulationMemory> instance;
+        if(!instance && device != VK_NULL_HANDLE)
+            instance = std::make_unique<SimulationMemory>(device, physicalDevice);
+        return *instance;
+    }
+};
+class VolumeSimulator {
+private:
+    VkDevice device;
+    VkCommandPool commandPool;
+    VkQueue computeQueue;
+    VkPhysicalDevice physicalDevice;
+    VkDescriptorSetLayout sharedDescriptorSetLayout;
+    VkDescriptorPool sharedDescriptorPool;
+    std::vector<VkDescriptorSet> descriptorSets;
+    SimulationMemory* simulationMemory;
+    std::vector<VkSemaphore> computeFinishedSemaphores;
+    std::vector<VkCommandBuffer> computeCommandBuffers;
+    uint32_t currentFrame = 0;
+    struct ComputeKernel {
+        VkPipeline pipeline;
+        VkPipelineLayout pipelineLayout;
+        VkShaderModule shaderModule;
+        std::string name;
+        glm::uvec3 workgroupSize;
+        bool needsBarrier;
+    };
+    std::map<std::string, ComputeKernel> kernels;
+    struct ComputePushConstants {
+        alignas(16) glm::vec3 gridSize;
+        alignas(16) glm::vec3 worldMin;
+        alignas(16) glm::vec3 worldMax;
+        alignas(16) glm::vec3 cellSize;
+        alignas(4) float deltaTime;
+        alignas(4) uint32_t numFans;
+        alignas(16) glm::vec3 fanPositions[maxFans];
+        alignas(16) glm::vec3 fanDirections[maxFans];
+    };
+public:
+    VolumeSimulator(VkDevice device, VkCommandPool commandPool, VkQueue computeQueue, VkPhysicalDevice physicalDevice)
+    : device(device), commandPool(commandPool), computeQueue(computeQueue), physicalDevice(physicalDevice) {
+        VulkanMemoryPool::getInstance(device, physicalDevice);
+        simulationMemory = &SimulationMemory::getInstance(device, physicalDevice);
+    }
+    ~VolumeSimulator() {
+        cleanup();
+    }
+    void initialize(VkDescriptorSetLayout descriptorSetLayout, VkDescriptorPool descriptorPool){
+        sharedDescriptorSetLayout = descriptorSetLayout;
+        sharedDescriptorPool = descriptorPool;
+        createSharedDescriptorSets();
+        computeFinishedSemaphores.resize(2);
+        computeCommandBuffers.resize(2);
+        for(size_t i = 0; i < computeFinishedSemaphores.size(); i++){
+            VkSemaphoreCreateInfo semaphoreInfo{};
+            semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            if(vkCreateSemaphore(device, &semaphoreInfo, nullptr, &computeFinishedSemaphores[i]) != VK_SUCCESS)
+                throw std::runtime_error("Failed to create compute finished semaphore");
+        }
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.commandPool = commandPool;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandBufferCount = static_cast<uint32_t>(computeCommandBuffers.size());
+        if(vkAllocateCommandBuffers(device, &allocInfo, computeCommandBuffers.data()) != VK_SUCCESS)
+            throw std::runtime_error("Failed to allocate compute command buffers");
+    }
+    void initSimulation(int numCells){
+        simulationMemory->ensureAllocated(numCells);
+        updateDescriptorSetsWithBuffers();
+    }
+    void updateDescriptorSetsWithBuffers(){
+        std::vector<VkWriteDescriptorSet> descriptorWrites;
+        std::vector<VkBuffer> buffers = {
+            simulationMemory->getDivergence(),
+            simulationMemory->getPressure(),
+            simulationMemory->getPressureOut(),
+            simulationMemory->getResidual(),
+            simulationMemory->getTempVelocity(),
+            simulationMemory->getVelocity(),
+            simulationMemory->getSpeed(),
+            simulationMemory->getTemperature(),
+            simulationMemory->getPressureTemp(),
+            simulationMemory->getTempTemperature(),
+            simulationMemory->getTempSum(),
+            simulationMemory->getWeightSum(),
+            simulationMemory->getTempSumDiss(),
+            simulationMemory->getFanAccess(),
+            simulationMemory->getSolidGrid(),
+        };
+        for(size_t i = 0; i < buffers.size(); i++){
+            VkDescriptorBufferInfo bufferInfo{};
+            bufferInfo.buffer = buffers[i];
+            bufferInfo.offset = 0;
+            bufferInfo.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet descriptorWrite{};
+            descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrite.dstSet = descriptorSets[0];
+            descriptorWrite.dstBinding = static_cast<uint32_t>(i);
+            descriptorWrite.dstArrayElement = 0;
+            descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            descriptorWrite.descriptorCount = 1;
+            descriptorWrite.pBufferInfo = &bufferInfo;
+            descriptorWrites.push_back(descriptorWrite);
+        }
+        vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+    }
+    VkImageView getVolumeImageView() {
+        return simulationMemory->getVolumeImageView();
+    }
+    VkImageView getTemperatureImageView() {
+        return simulationMemory->getTemperatureImageView();
+    }
+    void copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage, uint32_t width, uint32_t height, uint32_t depth){
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = dstImage;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        VkBufferImageCopy region{};
+        region.bufferOffset = 0;
+        region.bufferRowLength = 0;
+        region.bufferImageHeight = 0;
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.mipLevel = 0;
+        region.imageSubresource.baseArrayLayer = 0;
+        region.imageSubresource.layerCount = 1;
+        region.imageOffset = {0, 0, 0};
+        region.imageExtent = {width, height, depth};
+        vkCmdCopyBufferToImage(commandBuffer, srcBuffer, dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    }
+    void updateTextures() {
+        copyBufferToImage(computeCommandBuffers[currentFrame], simulationMemory->getTemperature(), simulationMemory->getTemperatureImage(), gridSizeX, gridSizeY, gridSizeZ);
+        copyBufferToImage(computeCommandBuffers[currentFrame], simulationMemory->getVelocity(), simulationMemory->getVolumeImage(), gridSizeX, gridSizeY, gridSizeZ);
+    }
+    void addKernel(const std::string &name, const std::string &shaderPath, glm::uvec3 workgroupSize = glm::uvec3(8, 8, 8), bool needsBarrier = true){
+        ComputeKernel kernel;
+        kernel.name = name;
+        kernel.workgroupSize = workgroupSize;
+        kernel.needsBarrier = needsBarrier;
+        std::vector<char> shaderCode = readFile(shaderPath);
+        kernel.shaderModule = createShaderModule(shaderCode);
+        createKernelPipelineLayout(kernel);
+        createKernelPipeline(kernel);
+        kernels[name] = kernel;
+    }
+    VkSemaphore dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants = {}){
+        int numCells = gridSize.x * gridSize.y * gridSize.z;
+        VkCommandBuffer commandBuffer = computeCommandBuffers[currentFrame];
+        vkResetCommandBuffer(commandBuffer, 0);
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if(vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
+            throw std::runtime_error("Failed to begin command buffer");
+        simulationMemory->ensureAllocated(numCells);
+        if(kernels.find(kernelName) == kernels.end())
+            throw std::runtime_error("Kernel not found: " + kernelName);
+        const ComputeKernel &kernel = kernels[kernelName];
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, kernel.pipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, kernel.pipelineLayout, 0, 1, descriptorSets.data(), 0, nullptr);
+        if(sizeof(pushConstants) > 0)
+            vkCmdPushConstants(commandBuffer, kernel.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &pushConstants);
+        glm::uvec3 numGroups = (gridSize + kernel.workgroupSize - 1u) / kernel.workgroupSize;
+        vkCmdDispatch(commandBuffer, numGroups.x, numGroups.y, numGroups.z);
+        if(kernel.needsBarrier) addMemoryBarrier(commandBuffer);
+        copyBufferToImage(commandBuffer, simulationMemory->getTemperature(), simulationMemory->getTemperatureImage(), gridSizeX, gridSizeY, gridSizeZ);
+        copyBufferToImage(commandBuffer, simulationMemory->getVelocity(), simulationMemory->getVolumeImage(), gridSizeX, gridSizeY, gridSizeZ);
+        vkEndCommandBuffer(commandBuffer);
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = &computeFinishedSemaphores[currentFrame];
+        if(vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+            throw std::runtime_error("Failed to submit compute command buffer");
+        return computeFinishedSemaphores[currentFrame];
+    }
+    void cleanup(){
+        for(auto &[name, kernel] : kernels){
+            vkDestroyShaderModule(device, kernel.shaderModule, nullptr);
+            vkDestroyPipeline(device, kernel.pipeline, nullptr);
+            vkDestroyPipelineLayout(device, kernel.pipelineLayout, nullptr);
+        }
+        for(auto &semaphore : computeFinishedSemaphores){
+            vkDestroySemaphore(device, semaphore, nullptr);
+        }
+        computeFinishedSemaphores.clear();
+        computeCommandBuffers.clear();
+        if(sharedDescriptorSetLayout != VK_NULL_HANDLE)
+            sharedDescriptorSetLayout = VK_NULL_HANDLE;
+        descriptorSets.clear();
+        kernels.clear();
+        vkDestroyDescriptorPool(device, sharedDescriptorPool, nullptr);
+    }
+    void cleanupSimulation(){
+        simulationMemory->cleanup();
+    }
+private:
+    void createKernelPipelineLayout(ComputeKernel &kernel){
+        VkPushConstantRange pushConstantRange{};
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pushConstantRange.offset = 0;
+        pushConstantRange.size = sizeof(ComputePushConstants);
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &sharedDescriptorSetLayout;
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+        if(vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &kernel.pipelineLayout) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create compute pipeline layout");
+    }
+    void createKernelPipeline(ComputeKernel &kernel){
+        VkPipelineShaderStageCreateInfo shaderStageInfo{};
+        shaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        shaderStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        shaderStageInfo.module = kernel.shaderModule;
+        shaderStageInfo.pName = "main";
+        VkComputePipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipelineInfo.stage = shaderStageInfo;
+        pipelineInfo.layout = kernel.pipelineLayout;
+        if(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &kernel.pipeline) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create compute pipeline");
+    }
+    void addMemoryBarrier(VkCommandBuffer commandBuffer){
+        VkMemoryBarrier memoryBarrier{};
+        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memoryBarrier, 0, nullptr, 0, nullptr);
+    }
+    void createSharedDescriptorSets(){
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = sharedDescriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &sharedDescriptorSetLayout;
+        descriptorSets.resize(1);
+        if(vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.data()) != VK_SUCCESS)
+            throw std::runtime_error("Failed to allocate descriptor sets");
+    }
+    VkShaderModule createShaderModule(const std::vector<char>& code){
+        VkShaderModuleCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        createInfo.codeSize = code.size();
+        createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+        VkShaderModule shaderModule;
+        if(vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create shader module");
+        return shaderModule;
+    }
+    VkCommandBuffer beginSingleTimeCommands(){
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.commandPool = commandPool;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandBufferCount = 1;
+
+        VkCommandBuffer commandBuffer;
+        if(vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS)
+            throw std::runtime_error("Failed to allocate command buffer");
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if(vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
+            throw std::runtime_error("Failed to begin command buffer");
+        return commandBuffer;
+    }
+    void endSingleTimeCommands(VkCommandBuffer commandBuffer){
+        if(vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
+            throw std::runtime_error("Failed to end command buffer");
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
+        if(vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+            throw std::runtime_error("Failed to submit command buffer");
+        vkQueueWaitIdle(computeQueue);
+        vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    }
+    static std::vector<char> readFile(const std::string& filename){
+        std::ifstream file(filename, std::ios::ate | std::ios::binary);
+        if(!file.is_open())
+            throw std::runtime_error("Failed to open file");
+        size_t fileSize = (size_t) file.tellg();
+        std::vector<char> buffer(fileSize);
+        file.seekg(0);
+        file.read(buffer.data(), fileSize);
+        file.close();
+        return buffer;
+    }
+};

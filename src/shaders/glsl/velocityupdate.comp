@@ -1,0 +1,127 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+layout(binding = 5, std430) restrict readonly buffer VelocityBuffer { vec3 velocity[]; };
+layout(binding = 4, std430) restrict writeonly buffer TempVelocityBuffer { vec3 tempVelocity[]; };
+layout(binding = 7, std430) restrict readonly buffer TemperatureBuffer { float temperature[]; };
+layout(binding = 13, std430) restrict readonly buffer FanAccessBuffer { uint fanAccess[]; };
+layout (binding = 14, std430) restrict readonly buffer SolidGridBuffer { uint solidGrid[]; };
+
+layout(push_constant) uniform PushConstants {
+    vec3 gridSize;
+    vec3 worldMin;
+    vec3 worldMax;
+    vec3 cellSize;
+    float deltaTime;
+    uint numFans;
+    vec3 fanPositions[8];
+    vec3 fanDirections[8];
+} pc;
+
+void main(){
+    uvec3 gid = gl_GlobalInvocationID;
+    if(gid.x >= uint(pc.gridSize.x) || gid.y >= uint(pc.gridSize.y) || gid.z >= uint(pc.gridSize.z))
+        return;
+    uint idx = gid.x + gid.y * uint(pc.gridSize.x) + gid.z * uint(pc.gridSize.x * pc.gridSize.y);
+    if(solidGrid[idx] != 0){
+        tempVelocity[idx] = vec3(0.0);
+        return;
+    }
+    float solidProximity = 0.0;
+    int solidCount = 0;
+    for(int dx=-1; dx<=1; dx++){
+        for(int dy=-1; dy<=1; dy++){
+            for(int dz=-1; dz<=1; dz++){
+                int ni = int(gid.x) + dx;
+                int nj = int(gid.y) + dy;
+                int nk = int(gid.z) + dz;
+                if(ni >= 0 && ni < int(pc.gridSize.x) &&
+                   nj >= 0 && nj < int(pc.gridSize.y) &&
+                   nk >= 0 && nk < int(pc.gridSize.z)){
+                    uint nidx = uint(ni + nj * pc.gridSize.x + nk * pc.gridSize.x * pc.gridSize.y);
+                    if(solidGrid[nidx] != 0){
+                        float dist = length(vec3(dx, dy, dz));
+                        solidProximity += 1.0 / (dist + 0.1);
+                        solidCount++;
+                    }
+                }
+            }
+        }
+    }
+    float advectionStrength = 0.8 / (1.0 + solidProximity * 0.3);
+    float x0 = float(gid.x) - velocity[idx].x * pc.deltaTime * advectionStrength / pc.cellSize.x;
+    float y0 = float(gid.y) - velocity[idx].y * pc.deltaTime * advectionStrength / pc.cellSize.y;
+    float z0 = float(gid.z) - velocity[idx].z * pc.deltaTime * advectionStrength / pc.cellSize.z;
+    x0 = min(max(x0, 0.5), pc.gridSize.x - 1.5);
+    y0 = min(max(y0, 0.5), pc.gridSize.y - 1.5);
+    z0 = min(max(z0, 0.5), pc.gridSize.z - 1.5);
+    int xi = int(x0);
+    int yi = int(y0);
+    int zi = int(z0);
+    float fx = x0 - float(xi);
+    float fy = y0 - float(yi);
+    float fz = z0 - float(zi);
+    xi = max(0, min(xi, int(pc.gridSize.x) - 2));
+    yi = max(0, min(yi, int(pc.gridSize.y) - 2));
+    zi = max(0, min(zi, int(pc.gridSize.z) - 2));
+    vec3 newVel = velocity[idx];
+    float sumW = 0.0;
+    vec3 acc = vec3(0.0);
+    for(int dx=0; dx<=1; dx++){
+        for(int dy=0; dy<=1; dy++){
+            for(int dz=0; dz<=1; dz++){
+                int nx = xi + dx;
+                int ny = yi + dy;
+                int nz = zi + dz;
+                if(nx >= 0 && nx < int(pc.gridSize.x) &&
+                    ny >= 0 && ny < int(pc.gridSize.y) &&
+                    nz >= 0 && nz < int(pc.gridSize.z)){
+                    uint nidx = uint(nx + ny * pc.gridSize.x + nz * pc.gridSize.x * pc.gridSize.y);
+                    float w = (dx != 0 ? fx : (1.0 - fx)) *
+                                (dy != 0 ? fy : (1.0 - fy)) *
+                                (dz != 0 ? fz : (1.0 - fz));
+                    if(solidGrid[nidx] == 0){
+                        vec3 val = velocity[nidx];
+                        acc += w * val;
+                        sumW += w;
+                    }
+                }
+            }
+        }
+    }
+    newVel = sumW > 1e-6 ? acc / sumW : newVel;
+    float worldX = (float(gid.x) + 0.5) * pc.cellSize.x + pc.worldMin.x;
+    float worldY = (float(gid.y) + 0.5) * pc.cellSize.y + pc.worldMin.y;
+    float worldZ = (float(gid.z) + 0.5) * pc.cellSize.z + pc.worldMin.z;
+    vec3 fanAccum = vec3(0.0);
+    uint numCells = uint(pc.gridSize.x * pc.gridSize.y * pc.gridSize.z);
+    for(uint f=0; f<pc.numFans; f++){
+        uint fanIdx = f * numCells + idx;
+        if(fanAccess[fanIdx] == 0) continue;
+        vec3 fanPos = pc.fanPositions[f];
+        vec3 fanDir = pc.fanDirections[f];
+        vec3 toCell = normalize(vec3(worldX, worldY, worldZ) - fanPos);
+        float alignment = dot(toCell, fanDir);
+        float fanRadiusSq = 0.4;
+        float distSq = dot(vec3(worldX, worldY, worldZ) - fanPos, vec3(worldX, worldY, worldZ) - fanPos);
+        float dist = sqrt(distSq);
+        float forceMagnitude = 5.0 * alignment * (1.0 - distSq / fanRadiusSq);
+        if(alignment > 0.01) fanAccum += forceMagnitude * fanDir;
+        else if(alignment < 0.1) fanAccum -= forceMagnitude * fanDir;
+        if(abs(alignment) > 0.1 && dist > 0.2){
+            float axialDistance = alignment * dist;
+            vec3 axialPoint = fanPos + axialDistance * fanDir;
+            vec3 radialVec = vec3(worldX, worldY, worldZ) - axialPoint;
+            float radialDistSq = dot(radialVec, radialVec);
+            if(radialDistSq > 1e-6){
+                float invRadialDist = 1.0 / sqrt(radialDistSq);
+                float radialStrength = 0.5 / (distSq + 0.5);
+                if(alignment > 0.0) fanAccum += radialStrength * invRadialDist * radialVec;
+                else fanAccum -= radialStrength * invRadialDist * radialVec;
+            }
+        }
+    }
+    newVel += fanAccum;
+    const float maxVel = 20.0;
+    tempVelocity[idx] = clamp(newVel, -maxVel, maxVel);
+}

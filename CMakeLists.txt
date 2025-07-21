@@ -32,10 +32,7 @@ link_directories(${CMAKE_SOURCE_DIR}/include)
 
 set(SOURCES
     src/main.cpp
-    src/shaders/compiled/main.vert.spv
-    src/shaders/compiled/main.frag.spv
-    src/shaders/compiled/ui.vert.spv
-    src/shaders/compiled/ui.frag.spv
+    src/simulator.cpp
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES})

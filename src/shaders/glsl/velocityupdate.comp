@@ -1,8 +1,9 @@
 #version 450
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
-layout(binding = 5, std430) restrict readonly buffer VelocityBuffer { vec3 velocity[]; };
-layout(binding = 4, std430) restrict writeonly buffer TempVelocityBuffer { vec3 tempVelocity[]; };
+layout(binding = 4, std430) restrict writeonly buffer TempVelocityBuffer { vec4 tempVelocity[]; };
+layout(binding = 5, std430) restrict readonly buffer VelocityBuffer { vec4 velocity[]; };
+layout(binding = 6, std430) restrict writeonly buffer SpeedBuffer { float speed[]; };
 layout(binding = 7, std430) restrict readonly buffer TemperatureBuffer { float temperature[]; };
 layout(binding = 13, std430) restrict readonly buffer FanAccessBuffer { uint fanAccess[]; };
 layout (binding = 14, std430) restrict readonly buffer SolidGridBuffer { uint solidGrid[]; };
@@ -24,7 +25,7 @@ void main(){
         return;
     uint idx = gid.x + gid.y * uint(pc.gridSize.x) + gid.z * uint(pc.gridSize.x * pc.gridSize.y);
     if(solidGrid[idx] != 0){
-        tempVelocity[idx] = vec3(0.0);
+        tempVelocity[idx] = vec4(0.0);
         return;
     }
     float solidProximity = 0.0;
@@ -64,7 +65,7 @@ void main(){
     xi = max(0, min(xi, int(pc.gridSize.x) - 2));
     yi = max(0, min(yi, int(pc.gridSize.y) - 2));
     zi = max(0, min(zi, int(pc.gridSize.z) - 2));
-    vec3 newVel = velocity[idx];
+    vec3 newVel = velocity[idx].xyz;
     float sumW = 0.0;
     vec3 acc = vec3(0.0);
     for(int dx=0; dx<=1; dx++){
@@ -81,7 +82,7 @@ void main(){
                                 (dy != 0 ? fy : (1.0 - fy)) *
                                 (dz != 0 ? fz : (1.0 - fz));
                     if(solidGrid[nidx] == 0){
-                        vec3 val = velocity[nidx];
+                        vec3 val = velocity[nidx].xyz;
                         acc += w * val;
                         sumW += w;
                     }
@@ -97,7 +98,7 @@ void main(){
     uint numCells = uint(pc.gridSize.x * pc.gridSize.y * pc.gridSize.z);
     for(uint f=0; f<pc.numFans; f++){
         uint fanIdx = f * numCells + idx;
-        if(fanAccess[fanIdx] == 0) continue;
+        // if(fanAccess[fanIdx] == 0) continue;
         vec3 fanPos = pc.fanPositions[f];
         vec3 fanDir = pc.fanDirections[f];
         vec3 toCell = normalize(vec3(worldX, worldY, worldZ) - fanPos);
@@ -123,5 +124,7 @@ void main(){
     }
     newVel += fanAccum;
     const float maxVel = 20.0;
-    tempVelocity[idx] = clamp(newVel, -maxVel, maxVel);
+    vec3 clampedVel = clamp(newVel, -maxVel, maxVel);
+    tempVelocity[idx] = vec4(clampedVel, 0.0);
+    speed[idx] = length(clampedVel);
 }

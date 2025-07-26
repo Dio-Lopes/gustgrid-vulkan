@@ -473,6 +473,8 @@ private:
         createUIDescriptorPool();
         createUIDescriptorSets();
         createUIResources();
+        createComputeDescriptorSetLayout();
+        createComputeDescriptorPool();
         volumeSimulator = new VolumeSimulator(device, commandPool, graphicsQueue, physicalDevice);
         volumeSimulator->initialize(computeDescriptorSetLayout, computeDescriptorPool);
         int numCells = gridSizeX * gridSizeY * gridSizeZ;
@@ -483,6 +485,8 @@ private:
         createVolumeDescriptorSetLayout();
         createVolumeDescriptorPool();
         createVolumePipeline();
+        volumeData.volumeImageView = volumeSimulator->getVolumeImageView();
+        volumeData.temperatureImageView = volumeSimulator->getTemperatureImageView();
         createVolumeDescriptorSets();
         createCommandBuffers();
         createSyncObjects();
@@ -496,6 +500,11 @@ private:
         vkDeviceWaitIdle(device);
     }
     void cleanup(){
+        if(volumeSimulator){
+            volumeSimulator->cleanup();
+            delete volumeSimulator;
+            volumeSimulator = nullptr;
+        }
         cleanupSwapChain();
         if(textVertexBuffer) vkUnmapMemory(device, textVertexBufferMemory);
         vkDestroyBuffer(device, textVertexBuffer, nullptr);
@@ -865,14 +874,6 @@ private:
             uboBufferInfo.buffer = volumeData.uniformBuffers[i];
             uboBufferInfo.offset = 0;
             uboBufferInfo.range = sizeof(VolumeUniformBufferObject);
-            VkDescriptorImageInfo volumeImageInfo{};
-            volumeImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            volumeImageInfo.imageView = volumeData.volumeImageView;
-            volumeImageInfo.sampler = volumeSampler;
-            VkDescriptorImageInfo tempImageInfo{};
-            tempImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            tempImageInfo.imageView = volumeData.temperatureImageView;
-            tempImageInfo.sampler = volumeSampler;
             std::array<VkWriteDescriptorSet, 3> descriptorWrites{};
             descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             descriptorWrites[0].dstSet = volumeData.descriptorSets[i];
@@ -881,20 +882,6 @@ private:
             descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             descriptorWrites[0].descriptorCount = 1;
             descriptorWrites[0].pBufferInfo = &uboBufferInfo;
-            descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            descriptorWrites[1].dstSet = volumeData.descriptorSets[i];
-            descriptorWrites[1].dstBinding = 1;
-            descriptorWrites[1].dstArrayElement = 0;
-            descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            descriptorWrites[1].descriptorCount = 1;
-            descriptorWrites[1].pImageInfo = &volumeImageInfo;
-            descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            descriptorWrites[2].dstSet = volumeData.descriptorSets[i];
-            descriptorWrites[2].dstBinding = 2;
-            descriptorWrites[2].dstArrayElement = 0;
-            descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            descriptorWrites[2].descriptorCount = 1;
-            descriptorWrites[2].pImageInfo = &tempImageInfo;
             vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
         }
     }
@@ -1436,75 +1423,6 @@ private:
             throw std::runtime_error("Failed to create image view!");
         return imageView;
     }
-    void create3DTexture(uint32_t width, uint32_t height, uint32_t depth, float* volumeData, VkFormat format, VkImage &volumeImage, VkImageView &volumeImageView, VkDeviceMemory &volumeImageMemory){
-        VkDeviceSize elementSize = 1;
-        if(format == VK_FORMAT_R32_SFLOAT) elementSize = 4;
-        VkDeviceSize imageSize = width * height * depth * elementSize;
-        VkBuffer stagingBuffer;
-        VkDeviceMemory stagingBufferMemory;
-        createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
-        void* data;
-        vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
-        memcpy(data, volumeData, static_cast<size_t>(imageSize));
-        vkUnmapMemory(device, stagingBufferMemory);
-        VkImageCreateInfo imageInfo{}; 
-        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imageInfo.imageType = VK_IMAGE_TYPE_3D;
-        imageInfo.extent.width = width;
-        imageInfo.extent.height = height;
-        imageInfo.extent.depth = depth;
-        imageInfo.mipLevels = 1;
-        imageInfo.arrayLayers = 1;
-        imageInfo.format = format;
-        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imageInfo.flags = 0;
-        if(vkCreateImage(device, &imageInfo, nullptr, &volumeImage) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create 3D texture image!");
-        VkMemoryRequirements memRequirements;
-        vkGetImageMemoryRequirements(device, volumeImage, &memRequirements);
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if(vkAllocateMemory(device, &allocInfo, nullptr, &volumeImageMemory) != VK_SUCCESS)
-            throw std::runtime_error("Failed to allocate 3D texture memory!");
-        vkBindImageMemory(device, volumeImage, volumeImageMemory, 0);
-        transitionImageLayout(volumeImage, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-        copy3DBufferToImage(stagingBuffer, volumeImage, width, height, depth);
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingBufferMemory, nullptr);
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = volumeImage;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_3D;
-        viewInfo.format = format;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
-        if(vkCreateImageView(device, &viewInfo, nullptr, &volumeImageView) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create 3D texture image view!");
-    }
-    void copy3DBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height, uint32_t depth){
-        VkCommandBuffer commandBuffer = beginSingleTimeCommands();
-        VkBufferImageCopy region{};
-        region.bufferOffset = 0;
-        region.bufferRowLength = 0;
-        region.bufferImageHeight = 0;
-        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        region.imageSubresource.mipLevel = 0;
-        region.imageSubresource.baseArrayLayer = 0;
-        region.imageSubresource.layerCount = 1;
-        region.imageOffset = {0, 0, 0};
-        region.imageExtent = {width, height, depth};
-        vkCmdCopyBufferToImage(commandBuffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-        endSingleTimeCommands(commandBuffer);
-    }
     void generateMipmaps(VkImage image, int32_t texWidth, uint32_t texHeight, uint32_t mipLevels){
         VkFormatProperties formatProperties;
         vkGetPhysicalDeviceFormatProperties(physicalDevice, VK_FORMAT_R8G8B8A8_SRGB, &formatProperties);
@@ -1847,26 +1765,37 @@ private:
         return volumeSimulator->dispatchKernel("velocityUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), pushConstants);
     }
     void updateVolumeDescriptorSets(){
-        VkDescriptorImageInfo volumeImageInfo{};
-        volumeImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        volumeImageInfo.imageView = volumeSimulator->getVolumeImageView();
-        volumeImageInfo.sampler = volumeSampler;
-        VkDescriptorImageInfo temperatureImageInfo{};
-        temperatureImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        temperatureImageInfo.imageView = volumeSimulator->getTemperatureImageView();
-        temperatureImageInfo.sampler = volumeSampler;
-        VkWriteDescriptorSet descriptorWrite{};
-        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = volumeData.descriptorSets[currentFrame];
-        descriptorWrite.dstBinding = 0;
-        descriptorWrite.dstArrayElement = 0;
-        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        descriptorWrite.descriptorCount = 1;
-        descriptorWrite.pImageInfo = &volumeImageInfo;
-        vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
-        descriptorWrite.dstBinding = 1;
-        descriptorWrite.pImageInfo = &temperatureImageInfo;
-        vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+        if(volumeSimulator->getTemperatureImageView() == VK_NULL_HANDLE
+        || volumeSimulator->getVolumeImageView() == VK_NULL_HANDLE){
+            std::cerr<<"Volume textures not ready!"<<std::endl;
+            return;
+        }
+        for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
+            VkDescriptorImageInfo volumeImageInfo{};
+            volumeImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            volumeImageInfo.imageView = volumeSimulator->getVolumeImageView();
+            volumeImageInfo.sampler = volumeSampler;
+            VkDescriptorImageInfo temperatureImageInfo{};
+            temperatureImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            temperatureImageInfo.imageView = volumeSimulator->getTemperatureImageView();
+            temperatureImageInfo.sampler = volumeSampler;
+            std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+            descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[0].dstSet = volumeData.descriptorSets[i];
+            descriptorWrites[0].dstBinding = 1;
+            descriptorWrites[0].dstArrayElement = 0;
+            descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[0].descriptorCount = 1;
+            descriptorWrites[0].pImageInfo = &volumeImageInfo;
+            descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[1].dstSet = volumeData.descriptorSets[i];
+            descriptorWrites[1].dstBinding = 2;
+            descriptorWrites[1].dstArrayElement = 0;
+            descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[1].descriptorCount = 1;
+            descriptorWrites[1].pImageInfo = &temperatureImageInfo;
+            vkUpdateDescriptorSets(device, 2, descriptorWrites.data(), 0, nullptr);
+        }
     }
     void createVertexBuffer(){
         std::vector<std::string> modelNames;
@@ -2074,6 +2003,34 @@ private:
         poolInfo.maxSets = static_cast<uint32_t>(uiObjects.size());
         if(vkCreateDescriptorPool(device, &poolInfo, nullptr, &uiDescriptorPool) != VK_SUCCESS)
             throw std::runtime_error("Failed to create text descriptor pool!");
+    }
+    void createComputeDescriptorSetLayout(){
+        std::vector<VkDescriptorSetLayoutBinding> bindings(15);
+        for(int i = 0; i < 15; i++){
+            bindings[i].binding = i;
+            bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            bindings[i].descriptorCount = 1;
+            bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            bindings[i].pImmutableSamplers = nullptr;
+        }
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+        layoutInfo.pBindings = bindings.data();
+        if(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &computeDescriptorSetLayout) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create compute descriptor set layout!");
+    }
+    void createComputeDescriptorPool(){
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSize.descriptorCount = 15;
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.maxSets = 1;
+        if(vkCreateDescriptorPool(device, &poolInfo, nullptr, &computeDescriptorPool) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create compute descriptor pool!");
     }
     void createTextDescriptorSets(){
         for(auto &[c, character] : Characters){

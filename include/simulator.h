@@ -9,8 +9,21 @@
 #include <cstring>
 #include <map>
 #define maxFans 8
+class VulkanMemoryPool;
+class SimulationMemory;
 class VolumeSimulator {
-public:
+private:
+    VkDevice device;
+    VkCommandPool commandPool;
+    VkQueue computeQueue;
+    VkPhysicalDevice physicalDevice;
+    VkDescriptorSetLayout sharedDescriptorSetLayout;
+    VkDescriptorPool sharedDescriptorPool;
+    std::vector<VkDescriptorSet> descriptorSets;
+    SimulationMemory* simulationMemory;
+    std::vector<VkSemaphore> computeFinishedSemaphores;
+    std::vector<VkCommandBuffer> computeCommandBuffers;
+    uint32_t currentFrame = 0;
     struct ComputeKernel {
         VkPipeline pipeline;
         VkPipelineLayout pipelineLayout;
@@ -20,6 +33,7 @@ public:
         bool needsBarrier;
     };
     std::map<std::string, ComputeKernel> kernels;
+public:
     struct ComputePushConstants {
         alignas(16) glm::vec3 gridSize;
         alignas(16) glm::vec3 worldMin;
@@ -41,4 +55,15 @@ public:
     void initSimulation(int numCells);
     void updateDescriptorSetsWithBuffers();
     void cleanupSimulation();
+    static std::vector<char> readFile(const std::string& filename);
+private:
+    void createKernelPipelineLayout(ComputeKernel &kernel);
+    void createKernelPipeline(ComputeKernel &kernel);
+    void addMemoryBarrier(VkCommandBuffer commandBuffer);
+    void createSharedDescriptorSets();
+    VkShaderModule createShaderModule(const std::vector<char>& code);
+    VkCommandBuffer beginSingleTimeCommands();
+    void endSingleTimeCommands(VkCommandBuffer commandBuffer);
+    void copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage, uint32_t width, uint32_t height, uint32_t depth);
+    void updateTextures();
 };

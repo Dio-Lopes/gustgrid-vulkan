@@ -1,5 +1,6 @@
 #define GLFW_INCLUDE_VULKAN
 #include <simulator.h>
+#include <vulkan_utils.h>
 #include <glfw/include/GLFW/glfw3.h>
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -397,6 +398,8 @@ private:
     bool framebufferResized = false;
     float currentTime = 0.0f;
     float fanStrength = 10.0f;
+    bool shouldUpdateFans = true;
+    bool shouldUpdateGrid = true;
     float dt = 0.0f;
 
     std::map<char, Character> Characters;
@@ -500,6 +503,7 @@ private:
         vkDeviceWaitIdle(device);
     }
     void cleanup(){
+        vkDeviceWaitIdle(device);
         if(volumeSimulator){
             volumeSimulator->cleanup();
             delete volumeSimulator;
@@ -560,12 +564,6 @@ private:
         vkFreeMemory(device, volumeData.vertexBufferMemory, nullptr);
         vkDestroyBuffer(device, volumeData.indexBuffer, nullptr);
         vkFreeMemory(device, volumeData.indexBufferMemory, nullptr);
-        vkDestroyImageView(device, volumeData.volumeImageView, nullptr);
-        vkDestroyImage(device, volumeData.volumeImage, nullptr);
-        vkFreeMemory(device, volumeData.volumeImageMemory, nullptr);
-        vkDestroyImageView(device, volumeData.temperatureImageView, nullptr);
-        vkDestroyImage(device, volumeData.temperatureImage, nullptr);
-        vkFreeMemory(device, volumeData.temperatureImageMemory, nullptr);
         vkDestroyPipeline(device, volumePipeline, nullptr);
         vkDestroyPipelineLayout(device, volumePipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, volumeDescriptorSetLayout, nullptr);
@@ -578,6 +576,8 @@ private:
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyRenderPass(device, renderPass, nullptr);
         vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, computeDescriptorSetLayout, nullptr);
+        vkDestroyDescriptorPool(device, computeDescriptorPool, nullptr);
         vkDestroyCommandPool(device, commandPool, nullptr);
         vkDestroyDevice(device, nullptr);
         if(enableValidationLayers) DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
@@ -658,19 +658,30 @@ private:
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);
         recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
         updateUniformBuffer(currentFrame);
-        VkSemaphore computeSemaphore = updateVolumeTextures();
-        updateVolumeDescriptorSets();
-        VkSemaphore waitSemaphores[] = {
-            imageAvailableSemaphores[currentFrame],
-            computeSemaphore
-        };
-        VkPipelineStageFlags waitStages[] = {
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
-        };
+        VkSemaphore waitSemaphores[2];
+        VkPipelineStageFlags waitStages[2];
+        uint32_t waitSemaphoreCount;
+        if(shouldUpdateGrid){
+            resetSolidGrid();
+            shouldUpdateGrid = false;
+        }
+        if(shouldUpdateFans){
+            VkSemaphore computeSemaphore = updateVolumeTextures();
+            updateVolumeDescriptorSets();
+            waitSemaphores[0] = imageAvailableSemaphores[currentFrame];
+            waitSemaphores[1] = computeSemaphore;
+            waitStages[0] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            waitStages[1] = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            waitSemaphoreCount = 2;
+            shouldUpdateFans = false;
+        } else{
+            waitSemaphores[0] = imageAvailableSemaphores[currentFrame];
+            waitStages[0] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            waitSemaphoreCount = 1;
+        }
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.waitSemaphoreCount = 2;
+        submitInfo.waitSemaphoreCount = waitSemaphoreCount;
         submitInfo.pWaitSemaphores = waitSemaphores;
         submitInfo.pWaitDstStageMask = waitStages;
         submitInfo.commandBufferCount = 1;
@@ -1502,9 +1513,10 @@ private:
         samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
         if(vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS)
             throw std::runtime_error("Failed to create texture sampler!");
-        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+        samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
         samplerInfo.maxLod = 1.0f;
         if(vkCreateSampler(device, &samplerInfo, nullptr, &volumeSampler) != VK_SUCCESS)
             throw std::runtime_error("Failed to create volume texture sampler!");
@@ -1755,14 +1767,81 @@ private:
         pushConstants.worldMax = glm::vec3(worldMaxX, worldMaxY, worldMaxZ);
         pushConstants.cellSize = glm::vec3(cellSizeX, cellSizeY, cellSizeZ);
         pushConstants.deltaTime = 1.0f / 60.0f; // 60 FPS
-        pushConstants.numFans = 3;
-        pushConstants.fanPositions[0] = glm::vec3(0.0f, backFanLocations[0], 0.0f);
-        pushConstants.fanPositions[1] = glm::vec3(0.0f, backFanLocations[1], 0.0f);
-        pushConstants.fanPositions[2] = glm::vec3(0.0f, backFanLocations[2], 0.0f);
-        pushConstants.fanDirections[0] = glm::vec3(1.0, 0.0, 0.0);
-        pushConstants.fanDirections[1] = glm::vec3(1.0, 0.0, 0.0);
-        pushConstants.fanDirections[2] = glm::vec3(1.0, 0.0, 0.0);
-        return volumeSimulator->dispatchKernel("velocityUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), pushConstants);
+        std::vector<glm::vec3> fanLocations;
+        std::vector<glm::vec3> fanDirections;
+        if(topFanEnabled){
+            fanLocations.push_back(glm::vec3(-0.22f, 4.2f, 1.6f));
+            fanDirections.push_back(glm::vec3(0.0f, 1.0f, 0.0f));
+        }
+        if(frontFanEnabled){
+            fanLocations.push_back(glm::vec3(0.48f, 2.6f, 3.5f));
+            fanDirections.push_back(glm::vec3(0.0f, 0.0f, 1.0f));
+        }
+        if(cpuFanEnabled){
+            fanLocations.push_back(glm::vec3(0.1f, 2.4f, 0.85f));
+            fanDirections.push_back(glm::vec3(0.0f, 0.0f, 1.0f));
+        }
+        if(gpuEnabled){
+            fanLocations.push_back(glm::vec3(-0.36f, 0.75f, 0.34f));
+            fanLocations.push_back(glm::vec3(-0.36f, 0.75f, 2.71f));
+            fanDirections.push_back(glm::vec3(0.0f, 1.0f, 0.0f));
+            fanDirections.push_back(glm::vec3(0.0f, 1.0f, 0.0f));
+        }
+        for(int i=0; i<3; i++){
+            if(backFanLocations[i] > 0.0f) continue;
+            fanLocations.push_back(glm::vec3(0.0f, 2.36343f + backFanLocations[i], -3.36426f));
+            fanDirections.push_back(glm::vec3(0.0f, 0.0f, 1.0f));
+        }
+        pushConstants.numFans = static_cast<uint32_t>(fanLocations.size());
+        for(int i=0; i<pushConstants.numFans; i++){
+            pushConstants.fanPositions[i] = fanLocations[i];
+            pushConstants.fanDirections[i] = fanDirections[i];
+        }
+        return volumeSimulator->dispatchKernel("velocityUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), pushConstants, true);
+    }
+    void resetSolidGrid(){
+        std::vector<uint32_t> h_solidGrid(gridSizeX * gridSizeY * gridSizeZ, 0);
+        std::vector<float> h_heatSources(gridSizeX * gridSizeY * gridSizeZ, 0.0f);
+
+        #pragma omp parallel for collapse(3)
+        for(int z = 0; z < gridSizeZ; z++){
+            float worldZ = worldMinZ + (z + 0.5f) * cellSizeZ;
+            for(int y = 0; y < gridSizeY; y++){
+                float worldY = worldMinY + (y + 0.5f) * cellSizeY;
+                for(int x = 0; x < gridSizeX; x++){
+                    float worldX = worldMinX + (x + 0.5f) * cellSizeX;
+                    int index = x + y * gridSizeX + z * gridSizeX * gridSizeY;
+                    bool insideSolid = false;
+                    float heatSource = 0.0f;
+
+                    // case
+                    if((worldY < -4.22f && worldZ > 0.5f) || (worldZ > -1.8f && worldY < -4.26f && worldY > -4.22f) || (worldY > 4.4f && worldZ > -3.65 && worldZ < -0.65)) insideSolid = true;
+                    if(worldX < -1.8f || worldX > 1.8f) insideSolid = true;
+                    if(worldZ > 3.8f && (worldY < 1.5f || worldX < -0.6f || worldY > 3.8f)) insideSolid = true;
+
+                    // gpu
+                    if(gpuEnabled && worldZ > -0.53f && worldZ < 3.7 && worldY > 0.95f && worldY < 1.09f && worldX < 0.5f) insideSolid = true;
+
+                    h_solidGrid[index] = insideSolid ? 1 : 0;
+
+                     // ram
+                    if(worldX < -0.95f && worldX > -1.57f && worldY < 3.6f && worldY > 1.2f && worldZ < 0.6f && worldZ > 0.18f) heatSource = 0.04f / 0.62;
+
+                    // gpu
+                    if(gpuEnabled && worldZ > -0.53f && worldZ < 3.7 && worldY > 0.8f && worldY < 1.09f && worldX < 0.5f) heatSource = 2.0f / 0.8f;
+
+                    // cpu
+                    if(worldZ > 1.2f && worldZ < 1.9f && worldY < 2.7f && worldY > 2.0f && worldX < -1.2f && worldX > -1.7f) heatSource = 0.8f / 0.25f;
+
+                    // psu
+                    if(worldY < -2.2f && worldY > -2.6f && worldZ > 0.4f && worldZ < 3.6f && worldX < 1.4f && worldX > -1.4f) heatSource = 0.28f / 3.6f;
+
+                    h_heatSources[index] = heatSource;
+                }
+            }
+        }
+        volumeSimulator->setSolidGrid(h_solidGrid.data());
+        volumeSimulator->setHeatSources(h_heatSources.data());
     }
     void updateVolumeDescriptorSets(){
         if(volumeSimulator->getTemperatureImageView() == VK_NULL_HANDLE
@@ -2005,8 +2084,8 @@ private:
             throw std::runtime_error("Failed to create text descriptor pool!");
     }
     void createComputeDescriptorSetLayout(){
-        std::vector<VkDescriptorSetLayoutBinding> bindings(15);
-        for(int i = 0; i < 15; i++){
+        std::vector<VkDescriptorSetLayoutBinding> bindings(16);
+        for(int i = 0; i < 16; i++){
             bindings[i].binding = i;
             bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             bindings[i].descriptorCount = 1;
@@ -2023,7 +2102,7 @@ private:
     void createComputeDescriptorPool(){
         VkDescriptorPoolSize poolSize{};
         poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSize.descriptorCount = 15;
+        poolSize.descriptorCount = 16;
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.poolSizeCount = 1;
@@ -2206,11 +2285,7 @@ private:
         }
     }
     void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size){
-        VkCommandBuffer commandBuffer = beginSingleTimeCommands();
-        VkBufferCopy copyRegion{};
-        copyRegion.size = size;
-        vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
-        endSingleTimeCommands(commandBuffer);
+        VulkanCommandUtils::copyBuffer(device, commandPool, graphicsQueue, srcBuffer, dstBuffer, size);
     }
     uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties){
         VkPhysicalDeviceMemoryProperties memProperties;
@@ -2221,29 +2296,10 @@ private:
         throw std::runtime_error("Failed to find suitable memory type!");
     }
     VkCommandBuffer beginSingleTimeCommands(){
-        VkCommandBufferAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocInfo.commandPool = commandPool;
-        allocInfo.commandBufferCount = 1;
-        VkCommandBuffer commandBuffer;
-        if(vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS)
-            throw std::runtime_error("Failed to allocate command buffer!");
-        VkCommandBufferBeginInfo beginInfo{};
-        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer(commandBuffer, &beginInfo);
-        return commandBuffer;
+        return VulkanCommandUtils::beginSingleTimeCommands(device, commandPool);
     }
     void endSingleTimeCommands(VkCommandBuffer commandBuffer){
-        vkEndCommandBuffer(commandBuffer);
-        VkSubmitInfo submitInfo{};
-        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &commandBuffer;
-        vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-        vkQueueWaitIdle(graphicsQueue);
-        vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        VulkanCommandUtils::endSingleTimeCommands(device, commandPool, graphicsQueue, commandBuffer);
     }
     void createCommandBuffers(){
         commandBuffers.resize(MAX_FRAMES_IN_FLIGHT);
@@ -2720,10 +2776,13 @@ private:
             if(app->getHoverBoolean.find(hoverElement) != app->getHoverBoolean.end()){
                 *app->getHoverBoolean[hoverElement] = !(*app->getHoverBoolean[hoverElement]);
                 app->uiObjects[hoverElement].name = *app->getHoverBoolean[hoverElement] ? "checkbox/checked" : "checkbox/unchecked";
-                if(app->uiToModel.find(hoverElement) != app->uiToModel.end())
+                if(app->uiToModel.find(hoverElement) != app->uiToModel.end()){
                     for(const auto &modelName : app->uiToModel[hoverElement])
                         app->models[modelName].enabled = *app->getHoverBoolean[hoverElement];
+                    app->shouldUpdateGrid = true;
+                }
                 app->updateUIDescriptorSet(hoverElement);
+                app->shouldUpdateFans = true;
             } else if(hoverElement == "fanUp"){
                 int currentFanCount = 0;
                 for(int i=0; i<3; i++) if(app->backFanLocations[i]<=0.0f) currentFanCount++;
@@ -2734,11 +2793,13 @@ private:
                     app->backFanLocations[1] = app->backFanLocations[0] - 2.5f;
                 }
                 else if(currentFanCount==2) for(int i=0; i<3; i++) app->backFanLocations[i] = i * -2.5f;
+                app->shouldUpdateFans = true;
             } else if(hoverElement == "fanDown"){
                 int currentFanCount = 0;
                 for(int i=0; i<3; i++) if(app->backFanLocations[i]<=0.0f) currentFanCount++;
                 if(currentFanCount==0) return;
                 app->backFanLocations[currentFanCount-1] = 1.0f;
+                app->shouldUpdateFans = true;
             } else if(hoverElement == "uiToggle"){
                 app->showUI = !app->showUI;
                 app->uiObjects[hoverElement].name = app->showUI ? "toggle/close" : "toggle/open";
@@ -2785,15 +2846,13 @@ private:
         } else if(app->showUI) {
             app->setCurrentHoverElement(scaledMouseX, scaledMouseY);
             if(app->hoverElement == "slider1" || app->hoverElement == "slider2" || app->hoverElement == "slider3"){
-                for(int i=0; i<3; i++) if(app->hoverElement == "slider" + std::to_string(i+1) && app->backFanLocations[i] > 0.0f) return;
-                for(int i=0; i<3; i++) if(app->hoverElement == "slider" + std::to_string(i+1)){
-                    app->backFanLocations[i] = -((scaledMouseX - (app->swapChainExtent.width - 310.0f)) / 230.0f) * 5.0f;
-                    if(i<2 && app->backFanLocations[i+1] <= 0.0f && app->backFanLocations[i+1] - app->backFanLocations[i] >= -2.5f) app->backFanLocations[i] = app->backFanLocations[i+1] + 2.5f;
-                    else if(i>0 && app->backFanLocations[i] - app->backFanLocations[i-1] >= -2.5f) app->backFanLocations[i] = app->backFanLocations[i-1] - 2.5f;
-                    if(app->backFanLocations[i] < -5.0f) app->backFanLocations[i] = -5.0f;
-                    else if(app->backFanLocations[i] > 0.0f) app->backFanLocations[i] = 0.0f;
-                    return;
-                }
+                int i = app->hoverElement.back() - '1';
+                if(app->backFanLocations[i] > 0.0f) return;
+                app->backFanLocations[i] = -((scaledMouseX - (app->swapChainExtent.width - 310.0f)) / 230.0f) * 5.0f;
+                if(i<2 && app->backFanLocations[i+1] <= 0.0f && app->backFanLocations[i+1] - app->backFanLocations[i] >= -2.5f) app->backFanLocations[i] = app->backFanLocations[i+1] + 2.5f;
+                else if(i>0 && app->backFanLocations[i] - app->backFanLocations[i-1] >= -2.5f) app->backFanLocations[i] = app->backFanLocations[i-1] - 2.5f;
+                app->backFanLocations[i] = std::clamp(app->backFanLocations[i], -5.0f, 0.0f);
+                return;
             } else if(app->hoverElement != "") return;
         } else{
             app->setCurrentHoverElement(scaledMouseX, scaledMouseY);

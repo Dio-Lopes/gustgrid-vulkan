@@ -26,6 +26,7 @@ void main(){
     uint idx = gid.x + gid.y * uint(pc.gridSize.x) + gid.z * uint(pc.gridSize.x * pc.gridSize.y);
     if(solidGrid[idx] != 0){
         tempVelocity[idx] = vec4(0.0);
+        speed[idx] = 0.0;
         return;
     }
     float solidProximity = 0.0;
@@ -107,7 +108,7 @@ void main(){
         float distSq = dot(vec3(worldX, worldY, worldZ) - fanPos, vec3(worldX, worldY, worldZ) - fanPos);
         float dist = sqrt(distSq);
         float forceMagnitude = 5.0 * alignment * (1.0 - distSq / fanRadiusSq);
-        if(alignment > 0.01) fanAccum += forceMagnitude * fanDir;
+        if(alignment > 0.1) fanAccum += forceMagnitude * fanDir;
         else if(alignment < 0.1) fanAccum -= forceMagnitude * fanDir;
         if(abs(alignment) > 0.1 && dist > 0.2){
             float axialDistance = alignment * dist;

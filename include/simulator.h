@@ -9,6 +9,9 @@
 #include <cstring>
 #include <map>
 #define maxFans 8
+#define gridSizeX 64
+#define gridSizeY 256
+#define gridSizeZ 128
 class VulkanMemoryPool;
 class SimulationMemory;
 class VolumeSimulator {
@@ -51,7 +54,9 @@ public:
     void addKernel(const std::string &name, const std::string &shaderPath, glm::uvec3 workgroupSize = glm::uvec3(8, 8, 8), bool needsBarrier = true);
     VkImageView getVolumeImageView();
     VkImageView getTemperatureImageView();
-    VkSemaphore dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants = {});
+    void setSolidGrid(const uint32_t* solidGrid, size_t numCells = gridSizeX * gridSizeY * gridSizeZ);
+    void setHeatSources(const float* heatSources, size_t numCells = gridSizeX * gridSizeY * gridSizeZ);
+    VkSemaphore dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants = {}, bool resetVelocity = false);
     void initSimulation(int numCells);
     void updateDescriptorSetsWithBuffers();
     void cleanupSimulation();
@@ -64,6 +69,6 @@ private:
     VkShaderModule createShaderModule(const std::vector<char>& code);
     VkCommandBuffer beginSingleTimeCommands();
     void endSingleTimeCommands(VkCommandBuffer commandBuffer);
+    void copyVelocityTemp();
     void copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage, uint32_t width, uint32_t height, uint32_t depth);
-    void updateTextures();
 };

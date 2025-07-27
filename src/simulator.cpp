@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <simulator.h>
+#include <vulkan_utils.h>
 
 #define gridSizeX 64
 #define gridSizeY 256
@@ -129,6 +130,7 @@ private:
     VkBuffer d_tempVelocity = VK_NULL_HANDLE;
     VkBuffer d_velocity = VK_NULL_HANDLE;
     VkBuffer d_speed = VK_NULL_HANDLE;
+    VkBuffer d_heatSources = VK_NULL_HANDLE;
     VkBuffer d_temperature = VK_NULL_HANDLE;
     VkBuffer d_pressureTemp = VK_NULL_HANDLE;
     VkBuffer d_tempTemperature = VK_NULL_HANDLE;
@@ -229,7 +231,7 @@ public:
             auto &pool = VulkanMemoryPool::getInstance();
             std::vector<VkBuffer> buffers = {
                 d_divergence, d_pressure, d_pressureOut, d_residual,
-                d_tempVelocity, d_velocity, d_speed, d_temperature,
+                d_tempVelocity, d_velocity, d_speed, d_temperature, d_heatSources,
                 d_pressureTemp, d_tempTemperature, d_tempSum,
                 d_weightSum, d_tempSumDiss, d_fanAccess, d_solidGrid
             };
@@ -241,7 +243,7 @@ public:
         }
         d_divergence = d_pressure = d_pressureOut = d_residual =
         d_tempVelocity = d_velocity = d_speed = d_temperature =
-        d_pressureTemp = d_tempTemperature = d_tempSum =
+        d_pressureTemp = d_tempTemperature = d_tempSum = d_heatSources =
         d_weightSum = d_tempSumDiss = d_fanAccess = d_solidGrid = VK_NULL_HANDLE;
         allocatedGridSize = 0;
     }
@@ -256,6 +258,7 @@ public:
         d_pressureOut = pool.allocate(numCells * sizeof(float), usage, properties);
         d_residual = pool.allocate(numCells * sizeof(float), usage, properties);
         d_tempVelocity = pool.allocate(numCells * 4 * sizeof(float), usage, properties);
+        d_heatSources = pool.allocate(numCells * sizeof(float), usage, properties);
         d_velocity = pool.allocate(numCells * 4 * sizeof(float), usage, properties);
         d_speed = pool.allocate(numCells * sizeof(float), usage, properties);
         d_temperature = pool.allocate(numCells * sizeof(float), usage, properties);
@@ -280,6 +283,7 @@ public:
     VkBuffer getPressureTemp() { return d_pressureTemp; }
     VkBuffer getResidual() { return d_residual; }
     VkBuffer getTempVelocity() { return d_tempVelocity; }
+    VkBuffer getHeatSources() { return d_heatSources; }
     VkBuffer getVelocity() { return d_velocity; }
     VkBuffer getSpeed() { return d_speed; }
     VkBuffer getTemperature() { return d_temperature; }
@@ -306,6 +310,28 @@ public:
             instance.reset();
         }
     }
+    void createStagingBuffer(VkDeviceSize size, VkBuffer &stagingBuffer, VkDeviceMemory &stagingMemory){
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = size;
+        bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if(vkCreateBuffer(device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create staging buffer");
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(device, stagingBuffer, &memRequirements);
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if(vkAllocateMemory(device, &allocInfo, nullptr, &stagingMemory) != VK_SUCCESS)
+            throw std::runtime_error("Failed to allocate memory for staging buffer");
+        if(vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0) != VK_SUCCESS)
+            throw std::runtime_error("Failed to bind memory to staging buffer");
+    }
+    void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size){
+        VulkanCommandUtils::copyBuffer(device, getCommandPool(), getComputeQueue(), srcBuffer, dstBuffer, size);
+    }
 private:
     void initializeBuffers(int numCells){
         size_t bufferSize = numCells * sizeof(float);
@@ -318,11 +344,19 @@ private:
         std::memcpy(data, initialData.data(), bufferSize);
         vkUnmapMemory(device, stagingMemory);
         std::vector<VkBuffer> floatBuffers = {
-            d_divergence, d_pressure, d_pressureOut, d_residual,
-            d_speed, d_temperature, d_pressureTemp, d_tempTemperature, 
-            d_tempSum, d_weightSum, d_tempSumDiss
+            d_divergence, d_pressure, d_pressureOut, d_residual, d_heatSources,
+            d_speed, d_pressureTemp, d_tempSum, d_weightSum, d_tempSumDiss
         };
         for(auto &buffer : floatBuffers) copyBuffer(stagingBuffer, buffer, bufferSize);
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingMemory, nullptr);
+        std::vector<float> initialTemperatureData(numCells, 22.0f);
+        createStagingBuffer(bufferSize, stagingBuffer, stagingMemory);
+        vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);
+        std::memcpy(data, initialTemperatureData.data(), bufferSize);
+        vkUnmapMemory(device, stagingMemory);
+        copyBuffer(stagingBuffer, d_temperature, bufferSize);
+        copyBuffer(stagingBuffer, d_tempTemperature, bufferSize);
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingMemory, nullptr);
         size_t velocityBufferSize = numCells * 4 * sizeof(float);
@@ -353,52 +387,6 @@ private:
         copyBuffer(stagingBuffer, d_solidGrid, solidGridBufferSize);
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingMemory, nullptr);
-    }
-    void createStagingBuffer(VkDeviceSize size, VkBuffer &stagingBuffer, VkDeviceMemory &stagingMemory){
-        VkBufferCreateInfo bufferInfo{};
-        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = size;
-        bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        if(vkCreateBuffer(device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create staging buffer");
-        VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(device, stagingBuffer, &memRequirements);
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if(vkAllocateMemory(device, &allocInfo, nullptr, &stagingMemory) != VK_SUCCESS)
-            throw std::runtime_error("Failed to allocate memory for staging buffer");
-        if(vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0) != VK_SUCCESS)
-            throw std::runtime_error("Failed to bind memory to staging buffer");
-    }
-    void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size){
-        VkCommandBufferAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocInfo.commandPool = getCommandPool();
-        allocInfo.commandBufferCount = 1;
-        VkCommandBuffer commandBuffer;
-        if(vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS)
-            throw std::runtime_error("Failed to allocate command buffer for buffer copy");
-        VkCommandBufferBeginInfo beginInfo{};
-        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        if(vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
-            throw std::runtime_error("Failed to begin command buffer for buffer copy");
-        VkBufferCopy copyRegion{};
-        copyRegion.size = size;
-        vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
-        if(vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
-            throw std::runtime_error("Failed to end command buffer for buffer copy");
-        VkSubmitInfo submitInfo{};
-        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &commandBuffer;
-        vkQueueSubmit(getComputeQueue(), 1, &submitInfo, VK_NULL_HANDLE);
-        vkQueueWaitIdle(getComputeQueue());
-        vkFreeCommandBuffers(device, getCommandPool(), 1, &commandBuffer);
     }
     VkCommandPool getCommandPool() const { return commandPool; }
     VkQueue getComputeQueue() const { return computeQueue; }
@@ -434,6 +422,37 @@ void VolumeSimulator::initialize(VkDescriptorSetLayout descriptorSetLayout, VkDe
 void VolumeSimulator::initSimulation(int numCells){
     simulationMemory->ensureAllocated(numCells);
     updateDescriptorSetsWithBuffers();
+}
+void VolumeSimulator::setSolidGrid(const uint32_t* solidGrid, size_t numCells){
+    if(numCells != static_cast<size_t>(gridSizeX * gridSizeY * gridSizeZ))
+        throw std::runtime_error("Solid grid size mismatch");
+    std::vector<unsigned char> charData(numCells);
+    for(size_t i = 0; i < numCells; i++)
+        charData[i] = static_cast<unsigned char>(solidGrid[i]);
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingMemory;
+    simulationMemory->createStagingBuffer(numCells * sizeof(unsigned char), stagingBuffer, stagingMemory);
+    void* data;
+    vkMapMemory(device, stagingMemory, 0, numCells * sizeof(unsigned char), 0, &data);
+    std::memcpy(data, charData.data(), numCells * sizeof(unsigned char));
+    vkUnmapMemory(device, stagingMemory);
+    simulationMemory->copyBuffer(stagingBuffer, simulationMemory->getSolidGrid(), numCells * sizeof(unsigned char));
+    vkDestroyBuffer(device, stagingBuffer, nullptr);
+    vkFreeMemory(device, stagingMemory, nullptr);
+}
+void VolumeSimulator::setHeatSources(const float* heatSources, size_t numCells){
+    if(numCells != static_cast<size_t>(gridSizeX * gridSizeY * gridSizeZ))
+        throw std::runtime_error("Heat sources size mismatch");
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingMemory;
+    simulationMemory->createStagingBuffer(numCells * sizeof(float), stagingBuffer, stagingMemory);
+    void* data;
+    vkMapMemory(device, stagingMemory, 0, numCells * sizeof(float), 0, &data);
+    std::memcpy(data, heatSources, numCells * sizeof(float));
+    vkUnmapMemory(device, stagingMemory);
+    simulationMemory->copyBuffer(stagingBuffer, simulationMemory->getHeatSources(), numCells * sizeof(float));
+    vkDestroyBuffer(device, stagingBuffer, nullptr);
+    vkFreeMemory(device, stagingMemory, nullptr);
 }
 void VolumeSimulator::updateDescriptorSetsWithBuffers(){
     std::vector<VkBuffer> buffers = {
@@ -485,7 +504,7 @@ VkImageView VolumeSimulator::getTemperatureImageView() {
 void VolumeSimulator::copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage, uint32_t width, uint32_t height, uint32_t depth){
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -515,10 +534,6 @@ void VolumeSimulator::copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer 
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
-void VolumeSimulator::updateTextures() {
-    copyBufferToImage(computeCommandBuffers[currentFrame], simulationMemory->getTemperature(), simulationMemory->getTemperatureImage(), gridSizeX, gridSizeY, gridSizeZ);
-    copyBufferToImage(computeCommandBuffers[currentFrame], simulationMemory->getSpeed(), simulationMemory->getVolumeImage(), gridSizeX, gridSizeY, gridSizeZ);
-}
 void VolumeSimulator::addKernel(const std::string &name, const std::string &shaderPath, glm::uvec3 workgroupSize, bool needsBarrier){
     ComputeKernel kernel;
     kernel.name = name;
@@ -530,7 +545,7 @@ void VolumeSimulator::addKernel(const std::string &name, const std::string &shad
     createKernelPipeline(kernel);
     kernels[name] = kernel;
 }
-VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants){
+VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants, bool resetVelocity){
     int numCells = gridSize.x * gridSize.y * gridSize.z;
     VkCommandBuffer commandBuffer = computeCommandBuffers[currentFrame];
     vkResetCommandBuffer(commandBuffer, 0);
@@ -539,7 +554,6 @@ VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if(vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
         throw std::runtime_error("Failed to begin command buffer");
-    simulationMemory->ensureAllocated(numCells);
     if(kernels.find(kernelName) == kernels.end())
         throw std::runtime_error("Kernel not found: " + kernelName);
     const ComputeKernel &kernel = kernels[kernelName];
@@ -550,6 +564,10 @@ VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::
     glm::uvec3 numGroups = (gridSize + kernel.workgroupSize - 1u) / kernel.workgroupSize;
     vkCmdDispatch(commandBuffer, numGroups.x, numGroups.y, numGroups.z);
     if(kernel.needsBarrier) addMemoryBarrier(commandBuffer);
+    if(resetVelocity){
+        copyVelocityTemp();
+        addMemoryBarrier(commandBuffer);
+    }
     copyBufferToImage(commandBuffer, simulationMemory->getTemperature(), simulationMemory->getTemperatureImage(), gridSizeX, gridSizeY, gridSizeZ);
     copyBufferToImage(commandBuffer, simulationMemory->getSpeed(), simulationMemory->getVolumeImage(), gridSizeX, gridSizeY, gridSizeZ);
     vkEndCommandBuffer(commandBuffer);
@@ -620,6 +638,22 @@ void VolumeSimulator::addMemoryBarrier(VkCommandBuffer commandBuffer){
     memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memoryBarrier, 0, nullptr, 0, nullptr);
 }
+void VolumeSimulator::copyVelocityTemp(){
+    size_t bufferSize = gridSizeX * gridSizeY * gridSizeZ * 4 * sizeof(float);
+    VkCommandBuffer commandBuffer = computeCommandBuffers[currentFrame];
+    simulationMemory->copyBuffer(simulationMemory->getTempVelocity(), simulationMemory->getVelocity(), bufferSize);
+    std::vector<float> initialData(bufferSize, 0.0f);
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingMemory;
+    simulationMemory->createStagingBuffer(bufferSize, stagingBuffer, stagingMemory);
+    void* data;
+    vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);
+    std::memcpy(data, initialData.data(), bufferSize);
+    vkUnmapMemory(device, stagingMemory);
+    simulationMemory->copyBuffer(stagingBuffer, simulationMemory->getTempVelocity(), bufferSize);
+    vkDestroyBuffer(device, stagingBuffer, nullptr);
+    vkFreeMemory(device, stagingMemory, nullptr);
+}
 void VolumeSimulator::createSharedDescriptorSets(){
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -641,33 +675,10 @@ VkShaderModule VolumeSimulator::createShaderModule(const std::vector<char>& code
     return shaderModule;
 }
 VkCommandBuffer VolumeSimulator::beginSingleTimeCommands(){
-    VkCommandBufferAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.commandPool = commandPool;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = 1;
-
-    VkCommandBuffer commandBuffer;
-    if(vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS)
-        throw std::runtime_error("Failed to allocate command buffer");
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if(vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
-        throw std::runtime_error("Failed to begin command buffer");
-    return commandBuffer;
+    return VulkanCommandUtils::beginSingleTimeCommands(device, commandPool);
 }
 void VolumeSimulator::endSingleTimeCommands(VkCommandBuffer commandBuffer){
-    if(vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
-        throw std::runtime_error("Failed to end command buffer");
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
-    if(vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
-        throw std::runtime_error("Failed to submit command buffer");
-    vkQueueWaitIdle(computeQueue);
-    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    VulkanCommandUtils::endSingleTimeCommands(device, commandPool, computeQueue, commandBuffer);
 }
 std::vector<char> VolumeSimulator::readFile(const std::string& filename){
     std::ifstream file(filename, std::ios::ate | std::ios::binary);

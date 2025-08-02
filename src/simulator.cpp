@@ -28,6 +28,8 @@
 #define worldMaxZ 4.0f
 #define maxFans 8
 
+static bool g_vulkanDeviceValid = true;
+
 class VulkanMemoryPool {
 private:
     struct Block {
@@ -52,14 +54,18 @@ private:
         throw std::runtime_error("Failed to find suitable memory type");
     }
 public:
+    static void markDeviceDestroyed(){
+        g_vulkanDeviceValid = false;
+    }
     VulkanMemoryPool(VkDevice device, VkPhysicalDevice physicalDevice)
         : device(device), physicalDevice(physicalDevice) {}
     ~VulkanMemoryPool(){
-        for(auto& block : blocks){
-            if(block.mappedData) vkUnmapMemory(device, block.memory);
-            vkDestroyBuffer(device, block.buffer, nullptr);
-            vkFreeMemory(device, block.memory, nullptr);
-        }
+        if(g_vulkanDeviceValid)
+            for(auto& block : blocks){
+                if(block.mappedData) vkUnmapMemory(device, block.memory);
+                vkDestroyBuffer(device, block.buffer, nullptr);
+                vkFreeMemory(device, block.memory, nullptr);
+            }
     }
     VkBuffer allocate(size_t size, VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT){
         size = ((size + 255) / 256) * 256;
@@ -116,9 +122,13 @@ public:
             instance = std::make_unique<VulkanMemoryPool>(device, physicalDevice);
         return *instance;
     }
-    static void destroyInstance(){
+    static std::unique_ptr<VulkanMemoryPool>& getInstancePtr(){
         static std::unique_ptr<VulkanMemoryPool> instance;
-        instance.reset();
+        return instance;
+    }
+    static void destroyInstance(){
+        auto& instance = getInstancePtr();
+        if(instance) instance.reset();
     }
 };
 class SimulationMemory {
@@ -199,6 +209,11 @@ private:
             throw std::runtime_error("Failed to create image view for 3D storage image");
     }
 public:
+    static void markDeviceDestroyed(){
+        g_vulkanDeviceValid = false;
+        auto &pool = VulkanMemoryPool::getInstance();
+        pool.markDeviceDestroyed();
+    }
     SimulationMemory(VkDevice device, VkPhysicalDevice physicalDevice, VkCommandPool commandPool, VkQueue computeQueue)
         : device(device), physicalDevice(physicalDevice), commandPool(commandPool), computeQueue(computeQueue) {}
     ~SimulationMemory(){
@@ -206,22 +221,22 @@ public:
     }
     void cleanup(){
         if(allocatedGridSize == 0) return;
-        if(computeQueue != VK_NULL_HANDLE) vkQueueWaitIdle(computeQueue);
-        if(d_temperatureImageView != VK_NULL_HANDLE){
+        if(g_vulkanDeviceValid && computeQueue != VK_NULL_HANDLE) vkQueueWaitIdle(computeQueue);
+        if(g_vulkanDeviceValid && d_temperatureImageView != VK_NULL_HANDLE){
             vkDestroyImageView(device, d_temperatureImageView, nullptr);
             d_temperatureImageView = VK_NULL_HANDLE;
         }
-        if(d_temperatureImage != VK_NULL_HANDLE){
+        if(g_vulkanDeviceValid && d_temperatureImage != VK_NULL_HANDLE){
             vkDestroyImage(device, d_temperatureImage, nullptr);
             vkFreeMemory(device, d_temperatureImageMemory, nullptr);
             d_temperatureImage = VK_NULL_HANDLE;
             d_temperatureImageMemory = VK_NULL_HANDLE;
         }
-        if(d_volumeImageView != VK_NULL_HANDLE){
+        if(g_vulkanDeviceValid && d_volumeImageView != VK_NULL_HANDLE){
             vkDestroyImageView(device, d_volumeImageView, nullptr);
             d_volumeImageView = VK_NULL_HANDLE;
         }
-        if(d_volumeImage != VK_NULL_HANDLE){
+        if(g_vulkanDeviceValid && d_volumeImage != VK_NULL_HANDLE){
             vkDestroyImage(device, d_volumeImage, nullptr);
             vkFreeMemory(device, d_volumeImageMemory, nullptr);
             d_volumeImage = VK_NULL_HANDLE;
@@ -236,7 +251,7 @@ public:
                 d_weightSum, d_tempSumDiss, d_fanAccess, d_solidGrid
             };
             for(auto buffer : buffers){
-                if(buffer != VK_NULL_HANDLE) pool.deallocate(buffer);
+                if(g_vulkanDeviceValid && buffer != VK_NULL_HANDLE) pool.deallocate(buffer);
             }
         } catch(const std::exception &e){
             std::cerr << "Error during cleanup: " << e.what() << std::endl;
@@ -303,12 +318,18 @@ public:
             instance = std::make_unique<SimulationMemory>(device, physicalDevice, commandPool, computeQueue);
         return *instance;
     }
-    static void destroyInstance(){
+    static std::unique_ptr<SimulationMemory>& getInstancePtr(){
         static std::unique_ptr<SimulationMemory> instance;
+        return instance;
+    }
+    static void destroyInstance(){
+        auto& instance = getInstancePtr();
         if(instance){
             instance->cleanup();
             instance.reset();
         }
+        auto &pool = VulkanMemoryPool::getInstance();
+        pool.destroyInstance();
     }
     void createStagingBuffer(VkDeviceSize size, VkBuffer &stagingBuffer, VkDeviceMemory &stagingMemory){
         VkBufferCreateInfo bufferInfo{};
@@ -600,6 +621,7 @@ void VolumeSimulator::cleanup(){
     descriptorSets.clear();
     sharedDescriptorSetLayout = VK_NULL_HANDLE;
     sharedDescriptorPool = VK_NULL_HANDLE;
+    simulationMemory->markDeviceDestroyed();
 }
 void VolumeSimulator::cleanupSimulation(){
     simulationMemory->cleanup();

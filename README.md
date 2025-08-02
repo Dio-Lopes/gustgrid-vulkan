@@ -69,7 +69,7 @@
 
 GustGrid-Vulkan is a high-performance simulation engine built in C++ and Vulkan, leveraging Vulkan compute shaders to deliver real-time visualization of PC airflow and thermal dynamics. By harnessing GPU-accelerated fluid dynamics, it accurately models heat dissipation, fan performance, and airflow patterns within complex computer chassis geometries. Its intuitive graphical interface allows users to interactively adjust component layouts and cooling configurations, enabling rapid design iterations and optimized thermal management for any PC build.
 
-This project is a C++ and Vulkan port of [GustGrid](github.com/josephHelfenbein/GustGrid), which was made in C++, OpenGL, and CUDA.
+This project is a C++ and Vulkan port of [GustGrid](https://github.com/josephHelfenbein/GustGrid), which was made in C++, OpenGL, and CUDA.
 
 This project is currently in development.
 

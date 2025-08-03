@@ -400,6 +400,7 @@ private:
     float fanStrength = 10.0f;
     bool shouldUpdateFans = true;
     bool shouldUpdateGrid = true;
+    VolumeSimulator::ComputePushConstants currentPushConstants;
     float dt = 0.0f;
 
     std::map<char, Character> Characters;
@@ -483,6 +484,7 @@ private:
         int numCells = gridSizeX * gridSizeY * gridSizeZ;
         volumeSimulator->initSimulation(numCells);
         volumeSimulator->addKernel("velocityUpdate", "src/shaders/compiled/velocityupdate.comp.spv");
+        volumeSimulator->addKernel("fanUpdate", "src/shaders/compiled/fanaccessupdate.comp.spv");
         createVolumeGeometry();
         createVolumeUniformBuffers();
         createVolumeDescriptorSetLayout();
@@ -666,7 +668,8 @@ private:
             shouldUpdateGrid = false;
         }
         if(shouldUpdateFans){
-            VkSemaphore computeSemaphore = updateVolumeTextures();
+            updateVolumeTextures();
+            VkSemaphore computeSemaphore = volumeSimulator->dispatchKernel("fanUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false);
             updateVolumeDescriptorSets();
             waitSemaphores[0] = imageAvailableSemaphores[currentFrame];
             waitSemaphores[1] = computeSemaphore;
@@ -675,9 +678,13 @@ private:
             waitSemaphoreCount = 2;
             shouldUpdateFans = false;
         } else{
+            VkSemaphore computeSemaphore = volumeSimulator->dispatchKernel("velocityUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, true);
+            updateVolumeDescriptorSets();
             waitSemaphores[0] = imageAvailableSemaphores[currentFrame];
+            waitSemaphores[1] = computeSemaphore;
             waitStages[0] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            waitSemaphoreCount = 1;
+            waitStages[1] = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            waitSemaphoreCount = 2;
         }
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1760,7 +1767,7 @@ private:
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingBufferMemory, nullptr);
     }
-    VkSemaphore updateVolumeTextures(){
+    void updateVolumeTextures(){
         VolumeSimulator::ComputePushConstants pushConstants;
         pushConstants.gridSize = glm::vec3(gridSizeX, gridSizeY, gridSizeZ);
         pushConstants.worldMin = glm::vec3(worldMinX, worldMinY, worldMinZ);
@@ -1797,7 +1804,7 @@ private:
             pushConstants.fanPositions[i] = fanLocations[i];
             pushConstants.fanDirections[i] = fanDirections[i];
         }
-        return volumeSimulator->dispatchKernel("velocityUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), pushConstants, true);
+        currentPushConstants = pushConstants;
     }
     void resetSolidGrid(){
         std::vector<uint32_t> h_solidGrid(gridSizeX * gridSizeY * gridSizeZ, 0);

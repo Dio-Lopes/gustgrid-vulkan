@@ -1,0 +1,74 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+layout(binding = 13, std430) restrict buffer FanAccessBuffer { uint fanAccess[]; };
+layout (binding = 14, std430) restrict readonly buffer SolidGridBuffer { uint solidGrid[]; };
+
+layout(push_constant) uniform PushConstants {
+    vec3 gridSize;
+    vec3 worldMin;
+    vec3 worldMax;
+    vec3 cellSize;
+    float deltaTime;
+    uint numFans;
+    vec3 fanPositions[8];
+    vec3 fanDirections[8];
+} pc;
+
+uint idx3D(int x, int y, int z, int gridSizeX, int gridSizeY) {
+    return uint(x + y * gridSizeX + z * gridSizeX * gridSizeY);
+}
+
+void main(){
+    uvec3 gid = gl_GlobalInvocationID;
+    if(gid.x >= uint(pc.gridSize.x) || gid.y >= uint(pc.gridSize.y) || gid.z >= uint(pc.gridSize.z))
+        return;
+    uint idx = idx3D(int(gid.x), int(gid.y), int(gid.z), int(pc.gridSize.x), int(pc.gridSize.y));
+    uint numCells = uint(pc.gridSize.x * pc.gridSize.y * pc.gridSize.z);
+    if(solidGrid[idx] != 0){
+        for(int f = 0; f < pc.numFans; f++){
+            uint fanIdx = f * numCells + idx;
+            fanAccess[fanIdx] = 0;
+        }
+        return;
+    }
+    vec3 targetPos = vec3((gid.x + 0.5) * pc.cellSize.x + pc.worldMin.x,
+                          (gid.y + 0.5) * pc.cellSize.y + pc.worldMin.y,
+                          (gid.z + 0.5) * pc.cellSize.z + pc.worldMin.z);
+    for(int f = 0; f < pc.numFans; f++){
+        uint fanIdx = f * numCells + idx;
+        vec3 fanPos = pc.fanPositions[f];
+        vec3 rayDir = targetPos - fanPos;
+        float rayLength = length(rayDir);
+        if(rayLength < max(pc.cellSize.x, max(pc.cellSize.y, pc.cellSize.z))){
+            fanAccess[fanIdx] = 1; 
+            continue;
+        }
+        float minCellSize = min(pc.cellSize.x, min(pc.cellSize.y, pc.cellSize.z));
+        int numSteps = int(rayLength / (minCellSize * 0.5));
+        float stepSize = rayLength / float(numSteps);
+        rayDir /= rayLength;
+        bool hit = false;
+        for(int step = 1; step < numSteps; step++){
+            float t = step * stepSize;
+            vec3 samplePos = fanPos + rayDir * t;
+            uvec3 voxel = uvec3(floor((samplePos.x - pc.worldMin.x) / pc.cellSize.x),
+                                floor((samplePos.y - pc.worldMin.y) / pc.cellSize.y),
+                                floor((samplePos.z - pc.worldMin.z) / pc.cellSize.z));
+            if(voxel.x < 0 || voxel.x >= uint(pc.gridSize.x) ||
+               voxel.y < 0 || voxel.y >= uint(pc.gridSize.y) ||
+               voxel.z < 0 || voxel.z >= uint(pc.gridSize.z)){
+                hit = true;
+                continue;
+            }
+            if(voxel.x == uint(gid.x) && voxel.y == uint(gid.y) && voxel.z == uint(gid.z))
+                break;
+            uint voxelIdx = idx3D(int(voxel.x), int(voxel.y), int(voxel.z), int(pc.gridSize.x), int(pc.gridSize.y));
+            if(solidGrid[voxelIdx] != 0 || fanAccess[f * numCells + voxelIdx] == 0){
+                hit = true;
+                break;
+            }
+        }
+        fanAccess[fanIdx] = hit ? 0 : 1;
+    }
+}

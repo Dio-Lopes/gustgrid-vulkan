@@ -282,7 +282,7 @@ public:
         d_tempSum = pool.allocate(numCells * sizeof(float), usage, properties);
         d_weightSum = pool.allocate(numCells * sizeof(float), usage, properties);
         d_tempSumDiss = pool.allocate(numCells * sizeof(float), usage, properties);
-        d_fanAccess = pool.allocate(numCells * maxFans * sizeof(unsigned char), usage, properties);
+        d_fanAccess = pool.allocate(numCells * maxFans * sizeof(uint32_t), usage, properties);
         d_solidGrid = pool.allocate(numCells * sizeof(unsigned char), usage, properties);
         initializeBuffers(numCells);
         uint32_t gridX = gridSizeX;
@@ -390,9 +390,9 @@ private:
         copyBuffer(stagingBuffer, d_velocity, velocityBufferSize);
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingMemory, nullptr);
-        size_t fanAccessBufferSize = numCells * maxFans * sizeof(unsigned char);
+        size_t fanAccessBufferSize = numCells * maxFans * sizeof(uint32_t);
         size_t solidGridBufferSize = numCells * sizeof(unsigned char);
-        std::vector<unsigned char> initialFanAccessData(numCells * maxFans, 0);
+        std::vector<uint32_t> initialFanAccessData(numCells * maxFans, 0);
         std::vector<unsigned char> initialSolidGridData(numCells, 0);
         createStagingBuffer(fanAccessBufferSize, stagingBuffer, stagingMemory);
         vkMapMemory(device, stagingMemory, 0, fanAccessBufferSize, 0 , &data);

@@ -400,6 +400,8 @@ private:
     float fanStrength = 10.0f;
     bool shouldUpdateFans = true;
     bool shouldUpdateGrid = true;
+    int maxPressureIterations = 8;
+    float pressureTolerance = 1e-6f;
     VolumeSimulator::ComputePushConstants currentPushConstants;
     float dt = 0.0f;
 
@@ -485,6 +487,14 @@ private:
         volumeSimulator->initSimulation(numCells);
         volumeSimulator->addKernel("velocityUpdate", "src/shaders/compiled/velocityupdate.comp.spv");
         volumeSimulator->addKernel("fanUpdate", "src/shaders/compiled/fanaccessupdate.comp.spv");
+        volumeSimulator->addKernel("computeDivergence", "src/shaders/compiled/computedivergence.comp.spv");
+        volumeSimulator->addKernel("pressureJacobi", "src/shaders/compiled/pressurejacobi.comp.spv");
+        volumeSimulator->addKernel("computeResidual", "src/shaders/compiled/computeresidual.comp.spv");
+        volumeSimulator->addKernel("subtractPressureGradient", "src/shaders/compiled/subtractpressuregradient.comp.spv");
+        volumeSimulator->addKernel("enforceBoundaryConditions", "src/shaders/compiled/enforceboundaryconditions.comp.spv");
+        volumeSimulator->addKernel("computeAdvection", "src/shaders/compiled/computeadvection.comp.spv");
+        volumeSimulator->addKernel("normalizeForward", "src/shaders/compiled/normalizeforward.comp.spv");
+        volumeSimulator->addKernel("diffuseKernel", "src/shaders/compiled/diffusekernel.comp.spv");
         createVolumeGeometry();
         createVolumeUniformBuffers();
         createVolumeDescriptorSetLayout();
@@ -660,37 +670,42 @@ private:
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);
         recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
         updateUniformBuffer(currentFrame);
-        VkSemaphore waitSemaphores[2];
-        VkPipelineStageFlags waitStages[2];
-        uint32_t waitSemaphoreCount;
         if(shouldUpdateGrid){
             resetSolidGrid();
             shouldUpdateGrid = false;
         }
         if(shouldUpdateFans){
             updateVolumeTextures();
-            VkSemaphore computeSemaphore = volumeSimulator->dispatchKernel("fanUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false);
-            updateVolumeDescriptorSets();
-            waitSemaphores[0] = imageAvailableSemaphores[currentFrame];
-            waitSemaphores[1] = computeSemaphore;
-            waitStages[0] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            waitStages[1] = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            waitSemaphoreCount = 2;
+            volumeSimulator->resetFanAccess();
+            VkSemaphore computeSemaphore = volumeSimulator->dispatchKernel("fanUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
             shouldUpdateFans = false;
-        } else{
-            VkSemaphore computeSemaphore = volumeSimulator->dispatchKernel("velocityUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, true);
-            updateVolumeDescriptorSets();
-            waitSemaphores[0] = imageAvailableSemaphores[currentFrame];
-            waitSemaphores[1] = computeSemaphore;
-            waitStages[0] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            waitStages[1] = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            waitSemaphoreCount = 2;
         }
+        VkSemaphore velocitySemaphore = volumeSimulator->dispatchKernel("velocityUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, true, true);
+        volumeSimulator->clearPressure();
+        VkSemaphore divergenceSemaphore = volumeSimulator->dispatchKernel("computeDivergence", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
+        for(int iter = 0; iter < maxPressureIterations; iter++){
+            VkSemaphore jacobiSemaphore = volumeSimulator->dispatchKernel("pressureJacobi", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
+            if(iter % 4 == 3 || iter == maxPressureIterations - 1){
+                VkSemaphore residualSemaphore = volumeSimulator->dispatchKernel("computeResidual", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
+            }
+            volumeSimulator->swapPressureBuffers();
+        }
+        VkSemaphore gradientSemaphore = volumeSimulator->dispatchKernel("subtractPressureGradient", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
+        VkSemaphore boundarySemaphore = volumeSimulator->dispatchKernel("enforceBoundaryConditions", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
+        VkSemaphore advectSemaphore = volumeSimulator->dispatchKernel("computeAdvection", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
+        VkSemaphore normalizeKernel = volumeSimulator->dispatchKernel("normalizeForward", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
+        VkSemaphore diffuseKernel = volumeSimulator->dispatchKernel("diffuseKernel", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
+        updateVolumeDescriptorSets();
+        vkQueueWaitIdle(graphicsQueue);
+        std::vector<VkSemaphore> waitSemaphores;
+        std::vector<VkPipelineStageFlags> waitStages;
+        waitSemaphores.push_back(imageAvailableSemaphores[currentFrame]);
+        waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.waitSemaphoreCount = waitSemaphoreCount;
-        submitInfo.pWaitSemaphores = waitSemaphores;
-        submitInfo.pWaitDstStageMask = waitStages;
+        submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
+        submitInfo.pWaitSemaphores = waitSemaphores.data();
+        submitInfo.pWaitDstStageMask = waitStages.data();
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
         VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
@@ -1774,6 +1789,7 @@ private:
         pushConstants.worldMax = glm::vec3(worldMaxX, worldMaxY, worldMaxZ);
         pushConstants.cellSize = glm::vec3(cellSizeX, cellSizeY, cellSizeZ);
         pushConstants.deltaTime = 1.0f / 60.0f; // 60 FPS
+        pushConstants.displayPressure = pressureEnabled;
         std::vector<glm::vec3> fanLocations;
         std::vector<glm::vec3> fanDirections;
         if(topFanEnabled){

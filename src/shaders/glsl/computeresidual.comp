@@ -1,0 +1,58 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+layout(binding = 0, std430) restrict readonly buffer DivergenceBuffer { float divergence[]; };
+layout(binding = 1, std430) restrict readonly buffer PressureInBuffer { float pressure[]; };
+layout(binding = 3, std430) restrict writeonly buffer ResidualBuffer { float residual[]; };
+layout(binding = 14, std430) restrict readonly buffer SolidGridBuffer { uint solidGrid[]; };
+
+layout(push_constant) uniform PushConstants {
+    vec3 gridSize;
+    vec3 worldMin;
+    vec3 worldMax;
+    vec3 cellSize;
+    float deltaTime;
+    uint numFans;
+    vec3 fanPositions[8];
+    vec3 fanDirections[8];
+} pc;
+
+uint idx3D(uint x, uint y, uint z){
+    return uint(x + y * pc.gridSize.x + z * pc.gridSize.x * pc.gridSize.y);
+}
+
+void main(){
+    uvec3 gid = gl_GlobalInvocationID;
+    if(gid.x >= uint(pc.gridSize.x) || gid.y >= uint(pc.gridSize.y) || gid.z >= uint(pc.gridSize.z))
+        return;
+    uint idx = idx3D(gid.x, gid.y, gid.z);
+    if(solidGrid[idx] != 0){
+        residual[idx] = 0.0;
+        return;
+    }
+    float laplacian = 0.0;
+    float centerPressure = pressure[idx];
+    const ivec3 neighbors[6] = {
+        ivec3(-1, 0, 0), ivec3(1, 0, 0),
+        ivec3(0, -1, 0), ivec3(0, 1, 0),
+        ivec3(0, 0, -1), ivec3(0, 0, 1)
+    };
+    float cellSizes[3] = { pc.cellSize.x, pc.cellSize.y, pc.cellSize.z };
+    for(int n = 0; n < 6; n++){
+        int ni = int(gid.x) + neighbors[n].x;
+        int nj = int(gid.y) + neighbors[n].y;
+        int nk = int(gid.z) + neighbors[n].z;
+        if(ni >= 0 && ni < int(pc.gridSize.x) &&
+           nj >= 0 && nj < int(pc.gridSize.y) &&
+           nk >= 0 && nk < int(pc.gridSize.z)){
+            uint nidx = idx3D(uint(ni), uint(nj), uint(nk));
+            if(solidGrid[nidx] == 0){
+                int axis = n / 2;
+                float h = cellSizes[axis];
+                laplacian += (pressure[nidx] - centerPressure) / (h * h);
+            }
+        }
+    }
+    float residualValue = laplacian - divergence[idx];
+    residual[idx] = residualValue * residualValue;
+}

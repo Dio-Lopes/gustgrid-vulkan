@@ -1,0 +1,71 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+layout(binding = 7, std430) restrict writeonly buffer TemperatureBuffer { float temperature[]; };
+layout(binding = 9, std430) restrict readonly buffer  TempTemperatureBuffer { float tempTemperature[]; };
+layout(binding = 14, std430) restrict readonly buffer SolidGridBuffer { uint solidGrid[]; };
+layout(binding = 15, std430) restrict readonly buffer HeatSourcesBuffer { float heatSources[]; };
+
+layout(push_constant) uniform PushConstants {
+    vec3 gridSize;
+    vec3 worldMin;
+    vec3 worldMax;
+    vec3 cellSize;
+    float deltaTime;
+    uint numFans;
+    vec3 fanPositions[8];
+    vec3 fanDirections[8];
+} pc;
+
+const float velocityThreshold = 0.1;
+const float c_ambientTemperature = 22.0;
+const float c_heatSourceStrength = 1.0;
+const float c_thermalDiffusivity = 1.5e-5;
+
+uint idx3D(uint x, uint y, uint z){
+    return uint(x + y * pc.gridSize.x + z * pc.gridSize.x * pc.gridSize.y);
+}
+
+void main(){
+    uvec3 gid = gl_GlobalInvocationID;
+    if(gid.x >= uint(pc.gridSize.x) || gid.y >= uint(pc.gridSize.y) || gid.z >= uint(pc.gridSize.z))
+        return;
+    uint idx = idx3D(gid.x, gid.y, gid.z);
+    float T0 = tempTemperature[idx];
+    const ivec3 neighbors[6] = {
+        ivec3(-1, 0, 0), ivec3(1, 0, 0),
+        ivec3(0, -1, 0), ivec3(0, 1, 0),
+        ivec3(0, 0, -1), ivec3(0, 0, 1)
+    };
+    float cellVolume = pc.cellSize.x * pc.cellSize.y * pc.cellSize.z;
+    float heat = c_heatSourceStrength * heatSources[idx] / (1.225 * 1005.0 * cellVolume);
+    float diffusionSum = 0.0;
+    float totalDiffusionCoeff = 0.0;
+    float cellSizes[3] = { pc.cellSize.x, pc.cellSize.y, pc.cellSize.z };
+    for(int n = 0; n < 6; n++){
+        int ni = int(gid.x) + neighbors[n].x;
+        int nj = int(gid.y) + neighbors[n].y;
+        int nk = int(gid.z) + neighbors[n].z;
+        if(ni >= 0 && ni < int(pc.gridSize.x) &&
+           nj >= 0 && nj < int(pc.gridSize.y) &&
+           nk >= 0 && nk < int(pc.gridSize.z)){
+            uint nidx = idx3D(uint(ni), uint(nj), uint(nk));
+            float neighborTemp = tempTemperature[nidx];
+            int axis = n / 2;
+            float h = cellSizes[axis];
+            float thermalConductivity;
+            if(solidGrid[idx] == 0 && solidGrid[nidx] == 0)
+                thermalConductivity = c_thermalDiffusivity;
+            else if(solidGrid[idx] != 0 && solidGrid[nidx] != 0)
+                thermalConductivity = c_thermalDiffusivity * 50.0;
+            else thermalConductivity = c_thermalDiffusivity * 10.0;
+            float diffusionCoeff = thermalConductivity / (h * h);
+            diffusionSum += diffusionCoeff * (neighborTemp - T0);
+            totalDiffusionCoeff += diffusionCoeff;
+        }
+    }
+    float alpha = totalDiffusionCoeff * pc.deltaTime;
+    float newTemp = (T0 + alpha * (diffusionSum / totalDiffusionCoeff) + heat) / (1.0 + alpha);
+    newTemp = clamp(newTemp, c_ambientTemperature - 10.0, c_ambientTemperature + 200.0);
+    temperature[idx] = newTemp;
+}

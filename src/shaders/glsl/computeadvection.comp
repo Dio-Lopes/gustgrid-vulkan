@@ -1,0 +1,149 @@
+#version 450
+#extension GL_EXT_shader_atomic_float : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+layout(binding = 5, std430) restrict buffer VelocityBuffer { vec4 velocity[]; };
+layout(binding = 6, std430) restrict writeonly buffer SpeedBuffer { float speed[]; };
+layout(binding = 7, std430) restrict readonly buffer TemperatureBuffer { float temperature[]; };
+layout(binding = 10, std430) restrict writeonly buffer TempSumBuffer { float tempSum[]; };
+layout(binding = 11, std430) restrict writeonly buffer WeightSumBuffer { float weightSum[]; };
+layout(binding = 12, std430) restrict writeonly buffer TempSumDissBuffer { float tempSumDiss[]; };
+layout(binding = 14, std430) restrict readonly buffer SolidGridBuffer { uint solidGrid[]; };
+
+layout(push_constant) uniform PushConstants {
+    vec3 gridSize;
+    vec3 worldMin;
+    vec3 worldMax;
+    vec3 cellSize;
+    float deltaTime;
+    uint numFans;
+    vec3 fanPositions[8];
+    vec3 fanDirections[8];
+} pc;
+
+const float velocityThreshold = 0.1;
+const float c_ambientTemperature = 22.0;
+
+uint idx3D(uint x, uint y, uint z){
+    return uint(x + y * pc.gridSize.x + z * pc.gridSize.x * pc.gridSize.y);
+}
+
+void main(){
+    uvec3 gid = gl_GlobalInvocationID;
+    if(gid.x >= uint(pc.gridSize.x) || gid.y >= uint(pc.gridSize.y) || gid.z >= uint(pc.gridSize.z))
+        return;
+    uint idx = idx3D(gid.x, gid.y, gid.z);
+    float temp = temperature[idx];
+    float tempDiff = temp - c_ambientTemperature;
+    float tempFactor = min(tempDiff / 50.0, 1.0);
+    float baseDissipationRate = 0.02 + tempFactor * 0.08;
+    float maxDissipation = 0.3 + tempFactor * 0.3;
+    vec3 v = velocity[idx].xyz;
+    float mag = length(v);
+    speed[idx] = mag;
+    float dissipationFactor = baseDissipationRate;
+    if(mag < velocityThreshold){
+        float stationaryFactor = 1.0 - (mag / velocityThreshold);
+        dissipationFactor = baseDissipationRate + stationaryFactor * (maxDissipation - baseDissipationRate);
+    }
+    if(solidGrid[idx] != 0) dissipationFactor *= 0.5;
+    dissipationFactor = min(dissipationFactor, 0.5);
+    float keepFraction = 1.0 - dissipationFactor;
+    float dissipationAmount = temp * dissipationFactor;
+    float x0 = float(gid.x);
+    float y0 = float(gid.y);
+    float z0 = float(gid.z);
+    float fx = x0 + v.x * pc.deltaTime / pc.cellSize.x;
+    float fy = y0 + v.y * pc.deltaTime / pc.cellSize.y;
+    float fz = z0 + v.z * pc.deltaTime / pc.cellSize.z;
+    fx = clamp(fx, 0.0, float(pc.gridSize.x) - 1.0);
+    fy = clamp(fy, 0.0, float(pc.gridSize.y) - 1.0);
+    fz = clamp(fz, 0.0, float(pc.gridSize.z) - 1.0);
+    int xi = int(floor(fx));
+    int yi = int(floor(fy));
+    int zi = int(floor(fz));
+    xi = clamp(xi, 0, int(pc.gridSize.x) - 1);
+    yi = clamp(yi, 0, int(pc.gridSize.y) - 1);
+    zi = clamp(zi, 0, int(pc.gridSize.z) - 1);
+    float wx = fx - float(xi);
+    float wy = fy - float(yi);
+    float wz = fz - float(zi);
+    wx = clamp(wx, 0.0, 1.0);
+    wy = clamp(wy, 0.0, 1.0);
+    wz = clamp(wz, 0.0, 1.0);
+    float tempToAdvect = temp * keepFraction;
+    float sumValidWeights = 0.0;
+    for(int dx = 0; dx <= 1; dx++){
+        for(int dy = 0; dy <= 1; dy++){
+            for(int dz = 0; dz <= 1; dz++){
+                int nx = xi + dx;
+                int ny = yi + dy;
+                int nz = zi + dz;
+                if(nx < 0 || nx >= int(pc.gridSize.x) ||
+                   ny < 0 || ny >= int(pc.gridSize.y) ||
+                   nz < 0 || nz >= int(pc.gridSize.z)) continue;
+                uint nidx = idx3D(uint(nx), uint(ny), uint(nz));
+                float weight = (dx == 0 ? (1.0 - wx) : wx) *
+                               (dy == 0 ? (1.0 - wy) : wy) *
+                               (dz == 0 ? (1.0 - wz) : wz);
+                if(weight > 1e-6){
+                    atomicAdd(tempSum[nidx], tempToAdvect * weight);
+                    atomicAdd(weightSum[nidx], weight);
+                    sumValidWeights += weight;
+                }
+            }
+        }
+    }
+    float lostWeight = 1.0 - sumValidWeights;
+    if(lostWeight > 1e-6){
+        for(int dx = 0; dx <= 1; dx++){
+            for(int dy = 0; dy <= 1; dy++){
+                for(int dz = 0; dz <= 1; dz++){
+                    int nx = xi + dx;
+                    int ny = yi + dy;
+                    int nz = zi + dz;
+                    if(nx < 0 || nx >= int(pc.gridSize.x) ||
+                       ny < 0 || ny >= int(pc.gridSize.y) ||
+                       nz < 0 || nz >= int(pc.gridSize.z)) continue;
+                    uint nidx = idx3D(uint(nx), uint(ny), uint(nz));
+                    atomicAdd(tempSum[nidx], tempToAdvect * lostWeight / 27.0);
+                    atomicAdd(weightSum[nidx], lostWeight / 27.0);
+                }
+            }
+        }
+    }
+    if(dissipationAmount > 1e-6){
+        int neighborCount = 0;
+        const ivec3 neighbors[6] = {
+            ivec3(-1, 0, 0), ivec3(1, 0, 0),
+            ivec3(0, -1, 0), ivec3(0, 1, 0),
+            ivec3(0, 0, -1), ivec3(0, 0, 1)
+        };
+        for(int n = 0; n < 6; n++){
+            int ni = int(gid.x) + neighbors[n].x;
+            int nj = int(gid.y) + neighbors[n].y;
+            int nk = int(gid.z) + neighbors[n].z;
+            if(ni >= 0 && ni < int(pc.gridSize.x) &&
+               nj >= 0 && nj < int(pc.gridSize.y) &&
+               nk >= 0 && nk < int(pc.gridSize.z))
+                neighborCount++;
+        }
+        if(neighborCount > 0){
+            float dissipationPerNeighbor = dissipationAmount / float(neighborCount);
+            for(int n = 0; n < 6; n++){
+                int ni = int(gid.x) + neighbors[n].x;
+                int nj = int(gid.y) + neighbors[n].y;
+                int nk = int(gid.z) + neighbors[n].z;
+                if(ni >= 0 && ni < int(pc.gridSize.x) &&
+                   nj >= 0 && nj < int(pc.gridSize.y) &&
+                   nk >= 0 && nk < int(pc.gridSize.z)){
+                    uint nidx = idx3D(uint(ni), uint(nj), uint(nk));
+                    float absorptionFactor = solidGrid[nidx] == 0 ? 1.0 : 0.3;
+                    float dissipatedToNeighbor = dissipationPerNeighbor * absorptionFactor;
+                    atomicAdd(tempSumDiss[nidx], dissipatedToNeighbor);
+                }
+            }
+        }
+
+    }
+}

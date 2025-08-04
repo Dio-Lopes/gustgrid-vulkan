@@ -1,0 +1,71 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+layout(binding = 1, std430) restrict readonly buffer PressureInBuffer { float pressure[]; };
+layout(binding = 5, std430) restrict writeonly buffer VelocityBuffer { vec4 velocity[]; };
+layout(binding = 7, std430) restrict readonly buffer TemperatureBuffer { float temperature[]; };
+layout(binding = 14, std430) restrict readonly buffer SolidGridBuffer { uint solidGrid[]; };
+
+layout(push_constant) uniform PushConstants {
+    vec3 gridSize;
+    vec3 worldMin;
+    vec3 worldMax;
+    vec3 cellSize;
+    float deltaTime;
+    uint numFans;
+    vec3 fanPositions[8];
+    vec3 fanDirections[8];
+} pc;
+
+const float c_ambientTemperature = 22.0;
+
+uint idx3D(uint x, uint y, uint z){
+    return uint(x + y * pc.gridSize.x + z * pc.gridSize.x * pc.gridSize.y);
+}
+
+void main(){
+    uvec3 gid = gl_GlobalInvocationID;
+    if(gid.x >= uint(pc.gridSize.x) || gid.y >= uint(pc.gridSize.y) || gid.z >= uint(pc.gridSize.z))
+        return;
+    uint idx = idx3D(gid.x, gid.y, gid.z);
+    if(solidGrid[idx] != 0){
+        velocity[idx] = vec4(0.0);
+        return;
+    }
+    vec3 pressureGradient = vec3(0.0);
+    float tempDiff = temperature[idx] - c_ambientTemperature;
+    if(gid.x > 0 && gid.x < uint(pc.gridSize.x) - 1){
+        uint leftIdx = idx3D(gid.x - 1, gid.y, gid.z);
+        uint rightIdx = idx3D(gid.x + 1, gid.y, gid.z);
+        float pLeft = pressure[leftIdx];
+        float pRight = pressure[rightIdx];
+        if(solidGrid[leftIdx] != 0) pLeft = pressure[idx] + tempDiff * 0.2;
+        else pLeft += (temperature[leftIdx] - c_ambientTemperature) * 0.1;
+        if(solidGrid[rightIdx] != 0) pRight = pressure[idx] + tempDiff * 0.2;
+        else pRight += (temperature[rightIdx] - c_ambientTemperature) * 0.1;
+        pressureGradient.x = (pRight - pLeft) / (2.0 * pc.cellSize.x);
+    }
+    if(gid.y > 0 && gid.y < uint(pc.gridSize.y) - 1){
+        uint downIdx = idx3D(gid.x, gid.y - 1, gid.z);
+        uint upIdx = idx3D(gid.x, gid.y + 1, gid.z);
+        float pDown = pressure[downIdx];
+        float pUp = pressure[upIdx];
+        if(solidGrid[downIdx] != 0) pDown = pressure[idx] + tempDiff * 0.2;
+        else pDown += (temperature[downIdx] - c_ambientTemperature) * 0.1;
+        if(solidGrid[upIdx] != 0) pUp = pressure[idx] + tempDiff * 0.2;
+        else pUp += (temperature[upIdx] - c_ambientTemperature) * 0.1;
+        pressureGradient.y = (pUp - pDown) / (2.0 * pc.cellSize.y);
+    }
+    if(gid.z > 0 && gid.z < uint(pc.gridSize.z) - 1){
+        uint backIdx = idx3D(gid.x, gid.y, gid.z - 1);
+        uint frontIdx = idx3D(gid.x, gid.y, gid.z + 1);
+        float pBack = pressure[backIdx];
+        float pFront = pressure[frontIdx];
+        if(solidGrid[backIdx] != 0) pBack = pressure[idx] + tempDiff * 0.2;
+        else pBack += (temperature[backIdx] - c_ambientTemperature) * 0.1;
+        if(solidGrid[frontIdx] != 0) pFront = pressure[idx] + tempDiff * 0.2;
+        else pFront += (temperature[frontIdx] - c_ambientTemperature) * 0.1;
+        pressureGradient.z = (pFront - pBack) / (2.0 * pc.cellSize.z);
+    }
+    velocity[idx].xyz -= pressureGradient * pc.deltaTime;
+}

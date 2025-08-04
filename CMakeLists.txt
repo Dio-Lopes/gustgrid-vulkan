@@ -38,6 +38,57 @@ set(SOURCES
 add_executable(${PROJECT_NAME} ${SOURCES})
 
 if(IS_MACOS)
+    find_program(GLSLC_EXECUTABLE glslc
+        HINTS
+            ${VK_SDK_PATH}/macOS/bin
+            /usr/local/bin
+            $ENV{VULKAN_SDK}/bin
+        PATHS
+            /Users/$ENV{USER}/VulkanSDK/*/macOS/bin
+    )
+else()
+    find_program(GLSLC_EXECUTABLE glslc
+        HINTS
+            ${VK_SDK_PATH}/Bin
+            $ENV{VULKAN_SDK}/bin
+    )
+endif()
+
+if(NOT GLSLC_EXECUTABLE)
+    message(FATAL_ERROR "glslc not found! Please install Vulkan SDK.")
+endif()
+
+file(MAKE_DIRECTORY ${CMAKE_SOURCE_DIR}/src/shaders/compiled)
+
+file(GLOB_RECURSE GLSL_SOURCE_FILES
+    "${CMAKE_SOURCE_DIR}/src/shaders/glsl/*.frag"
+    "${CMAKE_SOURCE_DIR}/src/shaders/glsl/*.vert"
+    "${CMAKE_SOURCE_DIR}/src/shaders/glsl/*.comp"
+)
+
+set(SPIRV_BINARY_FILES)
+
+foreach(GLSL ${GLSL_SOURCE_FILES})
+    get_filename_component(FILE_NAME ${GLSL} NAME)
+    set(SPIRV "${CMAKE_SOURCE_DIR}/src/shaders/compiled/${FILE_NAME}.spv")
+    add_custom_command(
+        OUTPUT ${SPIRV}
+        COMMAND ${GLSLC_EXECUTABLE} ${GLSL} -o ${SPIRV}
+        DEPENDS ${GLSL}
+        COMMENT "Compiling ${FILE_NAME}"
+    )
+    list(APPEND SPIRV_BINARY_FILES ${SPIRV})
+endforeach(GLSL)
+
+add_custom_target(
+    Shaders
+    DEPENDS ${SPIRV_BINARY_FILES}
+    COMMENT "Compiling shaders"
+)
+
+add_dependencies(${PROJECT_NAME} Shaders)
+
+if(IS_MACOS)
     find_package(Vulkan REQUIRED)
     find_package(glfw3 REQUIRED)
     find_package(Freetype REQUIRED)

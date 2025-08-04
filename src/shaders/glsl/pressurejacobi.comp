@@ -1,0 +1,109 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+layout(binding = 0, std430) restrict readonly buffer DivergenceBuffer { float divergence[]; };
+layout(binding = 1, std430) restrict readonly buffer PressureInBuffer { float pressure[]; };
+layout(binding = 2, std430) restrict writeonly buffer PressureOutBuffer { float pressureOut[]; };
+layout(binding = 14, std430) restrict readonly buffer SolidGridBuffer { uint solidGrid[]; };
+
+layout(push_constant) uniform PushConstants {
+    vec3 gridSize;
+    vec3 worldMin;
+    vec3 worldMax;
+    vec3 cellSize;
+    float deltaTime;
+    uint numFans;
+    vec3 fanPositions[8];
+    vec3 fanDirections[8];
+} pc;
+
+uint idx3D(uint x, uint y, uint z){
+    return uint(x + y * pc.gridSize.x + z * pc.gridSize.x * pc.gridSize.y);
+}
+
+shared float s_pressure[10][10][10];
+shared uint s_solid[10][10][10];
+
+void main(){
+    uvec3 gid = gl_GlobalInvocationID;
+    int tx = int(gl_LocalInvocationID.x) + 1;
+    int ty = int(gl_LocalInvocationID.y) + 1;
+    int tz = int(gl_LocalInvocationID.z) + 1;
+    if(gid.x < uint(pc.gridSize.x) && gid.y < uint(pc.gridSize.y) && gid.z < uint(pc.gridSize.z)){
+        uint idx = idx3D(gid.x, gid.y, gid.z);
+        s_pressure[tx][ty][tz] = pressure[idx];
+        s_solid[tx][ty][tz] = solidGrid[idx];
+        if(gl_LocalInvocationID.x == 0 && gid.x > 0){
+            uint leftIdx = idx3D(gid.x-1, gid.y, gid.z);
+            s_pressure[0][ty][tz] = pressure[leftIdx];
+            s_solid[0][ty][tz] = solidGrid[leftIdx];
+        }
+        if(gl_LocalInvocationID.x == gl_WorkGroupSize.x-1 && gid.x < uint(pc.gridSize.x)-1){
+            uint rightIdx = idx3D(gid.x+1, gid.y, gid.z);
+            s_pressure[tx+1][ty][tz] = pressure[rightIdx];
+            s_solid[tx+1][ty][tz] = solidGrid[rightIdx];
+        }
+        if(gl_LocalInvocationID.y == 0 && gid.y > 0){
+            uint downIdx = idx3D(gid.x, gid.y-1, gid.z);
+            s_pressure[tx][0][tz] = pressure[downIdx];
+            s_solid[tx][0][tz] = solidGrid[downIdx];
+        }
+        if(gl_LocalInvocationID.y == gl_WorkGroupSize.y-1 && gid.y < uint(pc.gridSize.y)-1){
+            uint upIdx = idx3D(gid.x, gid.y+1, gid.z);
+            s_pressure[tx][ty+1][tz] = pressure[upIdx];
+            s_solid[tx][ty+1][tz] = solidGrid[upIdx];
+        }
+        if(gl_LocalInvocationID.z == 0 && gid.z > 0){
+            uint backIdx = idx3D(gid.x, gid.y, gid.z-1);
+            s_pressure[tx][ty][0] = pressure[backIdx];
+            s_solid[tx][ty][0] = solidGrid[backIdx];
+        }
+        if(gl_LocalInvocationID.z == gl_WorkGroupSize.z-1 && gid.z < uint(pc.gridSize.z)-1){
+            uint frontIdx = idx3D(gid.x, gid.y, gid.z+1);
+            s_pressure[tx][ty][tz+1] = pressure[frontIdx];
+            s_solid[tx][ty][tz+1] = solidGrid[frontIdx];
+        }
+    }
+    barrier();
+    if(gid.x >= uint(pc.gridSize.x) || gid.y >= uint(pc.gridSize.y) || gid.z >= uint(pc.gridSize.z)) return;
+    uint idx = idx3D(gid.x, gid.y, gid.z);
+    if(solidGrid[idx] != 0){
+        pressureOut[idx] = 0.0f;
+        return;
+    }
+    float neighborPressureSum = 0.0f;
+    int neighborCount = 0;
+    if(gid.x > 0 && s_solid[tx-1][ty][tz] == 0){
+        neighborPressureSum += s_pressure[tx-1][ty][tz];
+        neighborCount++;
+    }
+    if(gid.x < uint(pc.gridSize.x)-1 && s_solid[tx+1][ty][tz] == 0){
+        neighborPressureSum += s_pressure[tx+1][ty][tz];
+        neighborCount++;
+    }
+    if(gid.y > 0 && s_solid[tx][ty-1][tz] == 0){
+        neighborPressureSum += s_pressure[tx][ty-1][tz];
+        neighborCount++;
+    }
+    if(gid.y < uint(pc.gridSize.y)-1 && s_solid[tx][ty+1][tz] == 0){
+        neighborPressureSum += s_pressure[tx][ty+1][tz];
+        neighborCount++;
+    }
+    if(gid.z > 0 && s_solid[tx][ty][tz-1] == 0){
+        neighborPressureSum += s_pressure[tx][ty][tz-1];
+        neighborCount++;
+    }
+    if(gid.z < uint(pc.gridSize.z)-1 && s_solid[tx][ty][tz+1] == 0){
+        neighborPressureSum += s_pressure[tx][ty][tz+1];
+        neighborCount++;
+    }
+    if(neighborCount == 0){
+        pressureOut[idx] = 0.0;
+        return;
+    }
+    float beta = 0.6;
+    float avgCellSize = (pc.cellSize.x + pc.cellSize.y + pc.cellSize.z) / 3.0;
+    float scale = avgCellSize * avgCellSize / pc.deltaTime;
+    float newPressure = (neighborPressureSum - divergence[idx] * scale) / float(neighborCount);
+    pressureOut[idx] = (1.0 - beta) * pressure[idx] + beta * newPressure;
+}

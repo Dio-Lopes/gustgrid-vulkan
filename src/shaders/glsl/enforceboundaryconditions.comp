@@ -1,0 +1,62 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+layout(binding = 5, std430) restrict buffer VelocityBuffer { vec4 velocity[]; };
+layout(binding = 7, std430) restrict readonly buffer TemperatureBuffer { float temperature[]; };
+layout(binding = 14, std430) restrict readonly buffer SolidGridBuffer { uint solidGrid[]; };
+
+layout(push_constant) uniform PushConstants {
+    vec3 gridSize;
+    vec3 worldMin;
+    vec3 worldMax;
+    vec3 cellSize;
+    float deltaTime;
+    uint numFans;
+    vec3 fanPositions[8];
+    vec3 fanDirections[8];
+} pc;
+
+const float c_ambientTemperature = 22.0;
+
+uint idx3D(uint x, uint y, uint z){
+    return uint(x + y * pc.gridSize.x + z * pc.gridSize.x * pc.gridSize.y);
+}
+
+void main(){
+    uvec3 gid = gl_GlobalInvocationID;
+    if(gid.x >= uint(pc.gridSize.x) || gid.y >= uint(pc.gridSize.y) || gid.z >= uint(pc.gridSize.z))
+        return;
+    uint idx = idx3D(gid.x, gid.y, gid.z);
+    if(solidGrid[idx] != 0){
+        velocity[idx] = vec4(0.0);
+        return;
+    }
+    vec3 v = velocity[idx].xyz;
+    float tempDiff = temperature[idx] - c_ambientTemperature;
+    float pressureMultiplier = 1.0 + min(tempDiff * 0.02, 2.0);
+    if(gid.x > 0 
+    && solidGrid[idx3D(gid.x - 1, gid.y, gid.z)] != 0
+    && v.x < 0.0)
+        v.x = -v.x * 0.8 * pressureMultiplier;
+    if(gid.x < uint(pc.gridSize.x) - 1
+    && solidGrid[idx3D(gid.x + 1, gid.y, gid.z)] != 0
+    && v.x > 0.0)
+        v.x = -v.x * 0.8 * pressureMultiplier;
+    if(gid.y > 0
+    && solidGrid[idx3D(gid.x, gid.y - 1, gid.z)] != 0
+    && v.y < 0.0)
+        v.y = -v.y * 0.8 * pressureMultiplier;
+    if(gid.y < uint(pc.gridSize.y) - 1
+    && solidGrid[idx3D(gid.x, gid.y + 1, gid.z)] != 0
+    && v.y > 0.0)
+        v.y = -v.y * 0.8 * pressureMultiplier;
+    if(gid.z > 0
+    && solidGrid[idx3D(gid.x, gid.y, gid.z - 1)] != 0
+    && v.z < 0.0)
+        v.z = -v.z * 0.8 * pressureMultiplier;
+    if(gid.z < uint(pc.gridSize.z) - 1
+    && solidGrid[idx3D(gid.x, gid.y, gid.z + 1)] != 0
+    && v.z > 0.0)
+        v.z = -v.z * 0.8 * pressureMultiplier;
+    velocity[idx] = vec4(v, 1.0);
+}

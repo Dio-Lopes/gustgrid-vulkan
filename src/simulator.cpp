@@ -312,6 +312,9 @@ public:
     VkImage getVolumeImage() { return d_volumeImage; }
     VkImageView getTemperatureImageView() { return d_temperatureImageView; }
     VkImageView getVolumeImageView() { return d_volumeImageView; }
+    void swapPressureBuffers() {
+        std::swap(d_pressure, d_pressureOut);
+    }
     static SimulationMemory &getInstance(VkDevice device = VK_NULL_HANDLE, VkPhysicalDevice physicalDevice = VK_NULL_HANDLE, VkCommandPool commandPool = VK_NULL_HANDLE, VkQueue computeQueue = VK_NULL_HANDLE){
         static std::unique_ptr<SimulationMemory> instance;
         if(!instance && device != VK_NULL_HANDLE)
@@ -492,6 +495,7 @@ void VolumeSimulator::updateDescriptorSetsWithBuffers(){
         simulationMemory->getTempSumDiss(),
         simulationMemory->getFanAccess(),
         simulationMemory->getSolidGrid(),
+        simulationMemory->getHeatSources()
     };
     for(size_t i = 0; i < buffers.size(); i++)
         if(buffers[i] == VK_NULL_HANDLE)
@@ -566,7 +570,7 @@ void VolumeSimulator::addKernel(const std::string &name, const std::string &shad
     createKernelPipeline(kernel);
     kernels[name] = kernel;
 }
-VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants, bool resetVelocity){
+VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants, bool resetVelocity, bool copyImages){
     int numCells = gridSize.x * gridSize.y * gridSize.z;
     VkCommandBuffer commandBuffer = computeCommandBuffers[currentFrame];
     vkResetCommandBuffer(commandBuffer, 0);
@@ -589,8 +593,12 @@ VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::
         copyVelocityTemp();
         addMemoryBarrier(commandBuffer);
     }
-    copyBufferToImage(commandBuffer, simulationMemory->getTemperature(), simulationMemory->getTemperatureImage(), gridSizeX, gridSizeY, gridSizeZ);
-    copyBufferToImage(commandBuffer, simulationMemory->getSpeed(), simulationMemory->getVolumeImage(), gridSizeX, gridSizeY, gridSizeZ);
+    if(copyImages){
+        copyBufferToImage(commandBuffer, simulationMemory->getTemperature(), simulationMemory->getTemperatureImage(), gridSizeX, gridSizeY, gridSizeZ);
+        if(pushConstants.displayPressure)
+            copyBufferToImage(commandBuffer, simulationMemory->getPressure(), simulationMemory->getVolumeImage(), gridSizeX, gridSizeY, gridSizeZ);
+        else copyBufferToImage(commandBuffer, simulationMemory->getSpeed(), simulationMemory->getVolumeImage(), gridSizeX, gridSizeY, gridSizeZ);
+    }
     vkEndCommandBuffer(commandBuffer);
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -601,6 +609,25 @@ VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::
     if(vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
         throw std::runtime_error("Failed to submit compute command buffer");
     return computeFinishedSemaphores[currentFrame];
+}
+void VolumeSimulator::clearPressure(){
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingMemory;
+    size_t bufferSize = gridSizeX * gridSizeY * gridSizeZ * sizeof(float);
+    simulationMemory->createStagingBuffer(bufferSize, stagingBuffer, stagingMemory);
+    void* data;
+    vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);
+    std::vector<float> initialData(gridSizeX * gridSizeY * gridSizeZ, 0.0f);
+    std::memcpy(data, initialData.data(), bufferSize);
+    vkUnmapMemory(device, stagingMemory);
+    simulationMemory->copyBuffer(stagingBuffer, simulationMemory->getPressure(), bufferSize);
+    simulationMemory->copyBuffer(stagingBuffer, simulationMemory->getPressureOut(), bufferSize);
+    vkDestroyBuffer(device, stagingBuffer, nullptr);
+    vkFreeMemory(device, stagingMemory, nullptr);
+}
+void VolumeSimulator::swapPressureBuffers(){
+    simulationMemory->swapPressureBuffers();
+    updateDescriptorSetsWithBuffers();
 }
 void VolumeSimulator::cleanup(){
     for(auto &[name, kernel] : kernels){
@@ -673,6 +700,20 @@ void VolumeSimulator::copyVelocityTemp(){
     std::memcpy(data, initialData.data(), bufferSize);
     vkUnmapMemory(device, stagingMemory);
     simulationMemory->copyBuffer(stagingBuffer, simulationMemory->getTempVelocity(), bufferSize);
+    vkDestroyBuffer(device, stagingBuffer, nullptr);
+    vkFreeMemory(device, stagingMemory, nullptr);
+}
+void VolumeSimulator::resetFanAccess(){
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingMemory;
+    size_t bufferSize = gridSizeX * gridSizeY * gridSizeZ * maxFans * sizeof(uint32_t);
+    simulationMemory->createStagingBuffer(bufferSize, stagingBuffer, stagingMemory);
+    std::vector<uint32_t> initialData(gridSizeX * gridSizeY * gridSizeZ * maxFans, 1);
+    void* data;
+    vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);
+    std::memcpy(data, initialData.data(), bufferSize);
+    vkUnmapMemory(device, stagingMemory);
+    simulationMemory->copyBuffer(stagingBuffer, simulationMemory->getFanAccess(), bufferSize);
     vkDestroyBuffer(device, stagingBuffer, nullptr);
     vkFreeMemory(device, stagingMemory, nullptr);
 }

@@ -15,15 +15,15 @@ layout(push_constant) uniform PushConstants {
     vec3 fanDirections[8];
 } pc;
 
-uint idx3D(int x, int y, int z, int gridSizeX, int gridSizeY) {
-    return uint(x + y * gridSizeX + z * gridSizeX * gridSizeY);
+uint idx3D(uint x, uint y, uint z){
+    return uint(x + y * pc.gridSize.x + z * pc.gridSize.x * pc.gridSize.y);
 }
 
 void main(){
     uvec3 gid = gl_GlobalInvocationID;
     if(gid.x >= uint(pc.gridSize.x) || gid.y >= uint(pc.gridSize.y) || gid.z >= uint(pc.gridSize.z))
         return;
-    uint idx = idx3D(int(gid.x), int(gid.y), int(gid.z), int(pc.gridSize.x), int(pc.gridSize.y));
+    uint idx = idx3D(gid.x, gid.y, gid.z);
     uint numCells = uint(pc.gridSize.x * pc.gridSize.y * pc.gridSize.z);
     if(solidGrid[idx] != 0){
         for(int f = 0; f < pc.numFans; f++){
@@ -63,7 +63,7 @@ void main(){
             }
             if(voxel.x == uint(gid.x) && voxel.y == uint(gid.y) && voxel.z == uint(gid.z))
                 break;
-            uint voxelIdx = idx3D(int(voxel.x), int(voxel.y), int(voxel.z), int(pc.gridSize.x), int(pc.gridSize.y));
+            uint voxelIdx = idx3D(voxel.x, voxel.y, voxel.z);
             if(solidGrid[voxelIdx] != 0 || fanAccess[f * numCells + voxelIdx] == 0){
                 hit = true;
                 break;

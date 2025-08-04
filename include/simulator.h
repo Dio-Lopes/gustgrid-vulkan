@@ -46,6 +46,7 @@ public:
         alignas(4) uint32_t numFans;
         alignas(16) glm::vec3 fanPositions[maxFans];
         alignas(16) glm::vec3 fanDirections[maxFans];
+        alignas(4) int displayPressure;
     };
     VolumeSimulator(VkDevice device, VkCommandPool commandPool, VkQueue computeQueue, VkPhysicalDevice physicalDevice);
     ~VolumeSimulator();
@@ -56,11 +57,14 @@ public:
     VkImageView getTemperatureImageView();
     void setSolidGrid(const uint32_t* solidGrid, size_t numCells = gridSizeX * gridSizeY * gridSizeZ);
     void setHeatSources(const float* heatSources, size_t numCells = gridSizeX * gridSizeY * gridSizeZ);
-    VkSemaphore dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants = {}, bool resetVelocity = false);
+    VkSemaphore dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants = {}, bool resetVelocity = false, bool copyImages = false);
     void initSimulation(int numCells);
     void updateDescriptorSetsWithBuffers();
+    void resetFanAccess();
+    void clearPressure();
+    void swapPressureBuffers();
     void cleanupSimulation();
-    static std::vector<char> readFile(const std::string& filename);
+    static std::vector<char> readFile(const std::string &filename);
 private:
     void createKernelPipelineLayout(ComputeKernel &kernel);
     void createKernelPipeline(ComputeKernel &kernel);

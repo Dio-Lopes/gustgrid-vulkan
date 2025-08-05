@@ -495,6 +495,10 @@ private:
         volumeSimulator->addKernel("computeAdvection", "src/shaders/compiled/computeadvection.comp.spv");
         volumeSimulator->addKernel("normalizeForward", "src/shaders/compiled/normalizeforward.comp.spv");
         volumeSimulator->addKernel("diffuseKernel", "src/shaders/compiled/diffusekernel.comp.spv");
+        volumeSimulator->addKernel("clearBuffers", "src/shaders/compiled/clearbuffers.comp.spv", glm::uvec3(64, 1, 1), true);
+        volumeSimulator->addKernel("clearPressure", "src/shaders/compiled/clearpressure.comp.spv", glm::uvec3(64, 1, 1), true);
+        volumeSimulator->addKernel("copyVelocityTemp", "src/shaders/compiled/copyvelocitytemp.comp.spv", glm::uvec3(64, 1, 1), true);
+        volumeSimulator->addKernel("resetFanAccess", "src/shaders/compiled/resetfanaccess.comp.spv", glm::uvec3(64, 1, 1), true);
         createVolumeGeometry();
         createVolumeUniformBuffers();
         createVolumeDescriptorSetLayout();
@@ -671,17 +675,24 @@ private:
         recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
         updateUniformBuffer(currentFrame);
         if(shouldUpdateGrid){
+            vkQueueWaitIdle(graphicsQueue);
             resetSolidGrid();
             shouldUpdateGrid = false;
         }
+        currentPushConstants.deltaTime = 1.0f / 60.0f;
+        uint32_t totalCells = gridSizeX * gridSizeY * gridSizeZ;
+        uint32_t fanElements = totalCells * maxFans;
+        VolumeSimulator::ComputePushConstants dummyConstants = {};
+        dummyConstants.gridSize = glm::vec3(gridSizeX, gridSizeY, gridSizeZ);
         if(shouldUpdateFans){
             updateVolumeTextures();
-            volumeSimulator->resetFanAccess();
+            VkSemaphore resetFanAccessSemaphore = volumeSimulator->dispatchKernel("resetFanAccess", glm::uvec3(fanElements, 1, 1), dummyConstants, false, false);
             VkSemaphore computeSemaphore = volumeSimulator->dispatchKernel("fanUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
             shouldUpdateFans = false;
         }
         VkSemaphore velocitySemaphore = volumeSimulator->dispatchKernel("velocityUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, true, true);
-        volumeSimulator->clearPressure();
+        VkSemaphore copyTempSemaphore = volumeSimulator->dispatchKernel("copyVelocityTemp", glm::uvec3(totalCells, 1, 1), dummyConstants, false, false);
+        VkSemaphore clearPressureSemaphore = volumeSimulator->dispatchKernel("clearPressure", glm::uvec3(totalCells, 1, 1), dummyConstants, false, false);
         VkSemaphore divergenceSemaphore = volumeSimulator->dispatchKernel("computeDivergence", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
         for(int iter = 0; iter < maxPressureIterations; iter++){
             VkSemaphore jacobiSemaphore = volumeSimulator->dispatchKernel("pressureJacobi", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
@@ -692,6 +703,7 @@ private:
         }
         VkSemaphore gradientSemaphore = volumeSimulator->dispatchKernel("subtractPressureGradient", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
         VkSemaphore boundarySemaphore = volumeSimulator->dispatchKernel("enforceBoundaryConditions", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
+        VkSemaphore clearTempBuffers = volumeSimulator->dispatchKernel("clearBuffers", glm::uvec3(totalCells, 1, 1), dummyConstants, false, false);
         VkSemaphore advectSemaphore = volumeSimulator->dispatchKernel("computeAdvection", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
         VkSemaphore normalizeKernel = volumeSimulator->dispatchKernel("normalizeForward", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
         VkSemaphore diffuseKernel = volumeSimulator->dispatchKernel("diffuseKernel", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
@@ -1788,7 +1800,6 @@ private:
         pushConstants.worldMin = glm::vec3(worldMinX, worldMinY, worldMinZ);
         pushConstants.worldMax = glm::vec3(worldMaxX, worldMaxY, worldMaxZ);
         pushConstants.cellSize = glm::vec3(cellSizeX, cellSizeY, cellSizeZ);
-        pushConstants.deltaTime = 1.0f / 60.0f; // 60 FPS
         pushConstants.displayPressure = pressureEnabled;
         std::vector<glm::vec3> fanLocations;
         std::vector<glm::vec3> fanDirections;
@@ -1823,48 +1834,56 @@ private:
         currentPushConstants = pushConstants;
     }
     void resetSolidGrid(){
-        std::vector<uint32_t> h_solidGrid(gridSizeX * gridSizeY * gridSizeZ, 0);
-        std::vector<float> h_heatSources(gridSizeX * gridSizeY * gridSizeZ, 0.0f);
+        if(!volumeSimulator){
+            std::cerr << "ERROR: VolumeSimulator not initialized when trying to reset solid grid!" << std::endl;
+            return;
+        }
+        try {
+            std::vector<uint32_t> h_solidGrid(gridSizeX * gridSizeY * gridSizeZ, 0);
+            std::vector<float> h_heatSources(gridSizeX * gridSizeY * gridSizeZ, 0.0f);
 
-        #pragma omp parallel for collapse(3)
-        for(int z = 0; z < gridSizeZ; z++){
-            float worldZ = worldMinZ + (z + 0.5f) * cellSizeZ;
-            for(int y = 0; y < gridSizeY; y++){
-                float worldY = worldMinY + (y + 0.5f) * cellSizeY;
-                for(int x = 0; x < gridSizeX; x++){
-                    float worldX = worldMinX + (x + 0.5f) * cellSizeX;
-                    int index = x + y * gridSizeX + z * gridSizeX * gridSizeY;
-                    bool insideSolid = false;
-                    float heatSource = 0.0f;
+            #pragma omp parallel for collapse(3)
+            for(int z = 0; z < gridSizeZ; z++){
+                for(int y = 0; y < gridSizeY; y++){
+                    for(int x = 0; x < gridSizeX; x++){
+                        float worldX = worldMinX + (x + 0.5f) * cellSizeX;
+                        float worldY = worldMinY + (y + 0.5f) * cellSizeY;
+                        float worldZ = worldMinZ + (z + 0.5f) * cellSizeZ;
+                        int index = x + y * gridSizeX + z * gridSizeX * gridSizeY;
+                        bool insideSolid = false;
+                        float heatSource = 0.0f;
 
-                    // case
-                    if((worldY < -4.22f && worldZ > 0.5f) || (worldZ > -1.8f && worldY < -4.26f && worldY > -4.22f) || (worldY > 4.4f && worldZ > -3.65 && worldZ < -0.65)) insideSolid = true;
-                    if(worldX < -1.8f || worldX > 1.8f) insideSolid = true;
-                    if(worldZ > 3.8f && (worldY < 1.5f || worldX < -0.6f || worldY > 3.8f)) insideSolid = true;
+                        // case
+                        if((worldY < -4.22f && worldZ > 0.5f) || (worldZ > -1.8f && worldY < -4.26f && worldY > -4.22f) || (worldY > 4.4f && worldZ > -3.65 && worldZ < -0.65)) insideSolid = true;
+                        if(worldX < -1.8f || worldX > 1.8f) insideSolid = true;
+                        if(worldZ > 3.8f && (worldY < 1.5f || worldX < -0.6f || worldY > 3.8f)) insideSolid = true;
 
-                    // gpu
-                    if(gpuEnabled && worldZ > -0.53f && worldZ < 3.7 && worldY > 0.95f && worldY < 1.09f && worldX < 0.5f) insideSolid = true;
+                        // gpu
+                        if(gpuEnabled && worldZ > -0.53f && worldZ < 3.7 && worldY > 0.95f && worldY < 1.09f && worldX < 0.5f) insideSolid = true;
 
-                    h_solidGrid[index] = insideSolid ? 1 : 0;
+                        h_solidGrid[index] = insideSolid ? 1 : 0;
 
-                     // ram
-                    if(worldX < -0.95f && worldX > -1.57f && worldY < 3.6f && worldY > 1.2f && worldZ < 0.6f && worldZ > 0.18f) heatSource = 0.04f / 0.62;
+                         // ram
+                        if(worldX < -0.95f && worldX > -1.57f && worldY < 3.6f && worldY > 1.2f && worldZ < 0.6f && worldZ > 0.18f) heatSource = 0.04f / 0.62;
 
-                    // gpu
-                    if(gpuEnabled && worldZ > -0.53f && worldZ < 3.7 && worldY > 0.8f && worldY < 1.09f && worldX < 0.5f) heatSource = 2.0f / 0.8f;
+                        // gpu
+                        if(gpuEnabled && worldZ > -0.53f && worldZ < 3.7 && worldY > 0.8f && worldY < 1.09f && worldX < 0.5f) heatSource = 2.0f / 0.8f;
 
-                    // cpu
-                    if(worldZ > 1.2f && worldZ < 1.9f && worldY < 2.7f && worldY > 2.0f && worldX < -1.2f && worldX > -1.7f) heatSource = 0.8f / 0.25f;
+                        // cpu
+                        if(worldZ > 1.2f && worldZ < 1.9f && worldY < 2.7f && worldY > 2.0f && worldX < -1.2f && worldX > -1.7f) heatSource = 0.8f / 0.25f;
 
-                    // psu
-                    if(worldY < -2.2f && worldY > -2.6f && worldZ > 0.4f && worldZ < 3.6f && worldX < 1.4f && worldX > -1.4f) heatSource = 0.28f / 3.6f;
+                        // psu
+                        if(worldY < -2.2f && worldY > -2.6f && worldZ > 0.4f && worldZ < 3.6f && worldX < 1.4f && worldX > -1.4f) heatSource = 0.28f / 3.6f;
 
-                    h_heatSources[index] = heatSource;
+                        h_heatSources[index] = heatSource;
+                    }
                 }
             }
+            volumeSimulator->setSolidGrid(h_solidGrid.data());
+            volumeSimulator->setHeatSources(h_heatSources.data());
+        } catch(const std::exception& e) {
+            std::cerr << "ERROR in resetSolidGrid: " << e.what() << std::endl;
         }
-        volumeSimulator->setSolidGrid(h_solidGrid.data());
-        volumeSimulator->setHeatSources(h_heatSources.data());
     }
     void updateVolumeDescriptorSets(){
         if(volumeSimulator->getTemperatureImageView() == VK_NULL_HANDLE
@@ -2188,21 +2207,41 @@ private:
         }
     }
     void updateUIDescriptorSet(std::string name){
-        auto &ui = uiObjects[name];
-        TextureData &textureData = textureAtlas[ui.name];
-        VkDescriptorImageInfo imageInfo{};
-        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imageInfo.imageView = textureData.imageView;
-        imageInfo.sampler = textureSampler;
-        VkWriteDescriptorSet descriptorWrite{};
-        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = ui.descriptorSet;
-        descriptorWrite.dstBinding = 0;
-        descriptorWrite.dstArrayElement = 0;
-        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        descriptorWrite.descriptorCount = 1;
-        descriptorWrite.pImageInfo = &imageInfo;
-        vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+        try {
+            if(uiObjects.find(name) == uiObjects.end()) {
+                std::cerr << "ERROR: UI object '" << name << "' not found!" << std::endl;
+                return;
+            }
+            
+            auto &ui = uiObjects[name];
+            if(textureAtlas.find(ui.name) == textureAtlas.end()) {
+                std::cerr << "ERROR: Texture '" << ui.name << "' not found in atlas!" << std::endl;
+                return;
+            }
+            
+            TextureData &textureData = textureAtlas[ui.name];
+            if(textureData.imageView == VK_NULL_HANDLE) {
+                std::cerr << "ERROR: Invalid image view for texture '" << ui.name << "'!" << std::endl;
+                return;
+            }
+            
+            VkDescriptorImageInfo imageInfo{};
+            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfo.imageView = textureData.imageView;
+            imageInfo.sampler = textureSampler;
+            VkWriteDescriptorSet descriptorWrite{};
+            descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrite.dstSet = ui.descriptorSet;
+            descriptorWrite.dstBinding = 0;
+            descriptorWrite.dstArrayElement = 0;
+            descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrite.descriptorCount = 1;
+            descriptorWrite.pImageInfo = &imageInfo;
+            vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+        } catch(const std::exception& e) {
+            std::cerr << "ERROR in updateUIDescriptorSet for '" << name << "': " << e.what() << std::endl;
+            // Don't rethrow - continue execution to avoid crash
+        }
     }
     void prepareTextureAtlas(){
         for(auto &texture : textureAtlas){
@@ -2792,8 +2831,15 @@ private:
     static void processInput(GLFWwindow* window){
         auto app = reinterpret_cast<GustGrid*>(glfwGetWindowUserPointer(window));
         static bool wasPressed = false;
+        static double lastClickTime = 0.0;
         bool isPressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        double currentTime = glfwGetTime();
         if(isPressed && !wasPressed){
+            if(currentTime - lastClickTime < 0.2){
+                wasPressed = isPressed;
+                return;
+            }
+            lastClickTime = currentTime;
             auto hoverElement = app->hoverElement;
             if(hoverElement.empty()) return;
             if(app->getHoverBoolean.find(hoverElement) != app->getHoverBoolean.end()){

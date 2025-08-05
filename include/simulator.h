@@ -44,6 +44,7 @@ public:
         alignas(16) glm::vec3 cellSize;
         alignas(4) float deltaTime;
         alignas(4) uint32_t numFans;
+        alignas(8) uint32_t _pad[2];
         alignas(16) glm::vec3 fanPositions[maxFans];
         alignas(16) glm::vec3 fanDirections[maxFans];
         alignas(4) int displayPressure;
@@ -60,8 +61,6 @@ public:
     VkSemaphore dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants = {}, bool resetVelocity = false, bool copyImages = false);
     void initSimulation(int numCells);
     void updateDescriptorSetsWithBuffers();
-    void resetFanAccess();
-    void clearPressure();
     void swapPressureBuffers();
     void cleanupSimulation();
     static std::vector<char> readFile(const std::string &filename);
@@ -73,6 +72,5 @@ private:
     VkShaderModule createShaderModule(const std::vector<char>& code);
     VkCommandBuffer beginSingleTimeCommands();
     void endSingleTimeCommands(VkCommandBuffer commandBuffer);
-    void copyVelocityTemp();
     void copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage, uint32_t width, uint32_t height, uint32_t depth);
 };

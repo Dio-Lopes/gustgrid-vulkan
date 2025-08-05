@@ -589,10 +589,6 @@ VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::
     glm::uvec3 numGroups = (gridSize + kernel.workgroupSize - 1u) / kernel.workgroupSize;
     vkCmdDispatch(commandBuffer, numGroups.x, numGroups.y, numGroups.z);
     if(kernel.needsBarrier) addMemoryBarrier(commandBuffer);
-    if(resetVelocity){
-        copyVelocityTemp();
-        addMemoryBarrier(commandBuffer);
-    }
     if(copyImages){
         copyBufferToImage(commandBuffer, simulationMemory->getTemperature(), simulationMemory->getTemperatureImage(), gridSizeX, gridSizeY, gridSizeZ);
         if(pushConstants.displayPressure)
@@ -600,30 +596,36 @@ VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::
         else copyBufferToImage(commandBuffer, simulationMemory->getSpeed(), simulationMemory->getVolumeImage(), gridSizeX, gridSizeY, gridSizeZ);
     }
     vkEndCommandBuffer(commandBuffer);
+    VkFence timeoutFence;
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    if(vkCreateFence(device, &fenceInfo, nullptr, &timeoutFence) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create timeout fence");
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = &computeFinishedSemaphores[currentFrame];
-    if(vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+    if(vkQueueSubmit(computeQueue, 1, &submitInfo, timeoutFence) != VK_SUCCESS){
+        vkDestroyFence(device, timeoutFence, nullptr);
         throw std::runtime_error("Failed to submit compute command buffer");
+    }
+    const uint64_t TIMEOUT_NANOSECONDS = 5000000000ULL;
+    VkResult result = vkWaitForFences(device, 1, &timeoutFence, VK_TRUE, TIMEOUT_NANOSECONDS);
+    if(result == VK_TIMEOUT){
+        std::cerr << "WARNING: Compute kernel '" << kernelName << "' timed out after 5 seconds!" << std::endl;
+        std::cerr << "Dispatch size: " << numGroups.x << "x" << numGroups.y << "x" << numGroups.z << " work groups" << std::endl;
+        vkDestroyFence(device, timeoutFence, nullptr);
+        vkResetCommandPool(device, commandPool, 0);
+        throw std::runtime_error("Compute kernel '" + kernelName + "' timed out - possible infinite loop in shader");
+    }
+    else if(result != VK_SUCCESS){
+        vkDestroyFence(device, timeoutFence, nullptr);
+        throw std::runtime_error("Failed to wait for compute completion: " + std::to_string(result));
+    }
+    vkDestroyFence(device, timeoutFence, nullptr);
     return computeFinishedSemaphores[currentFrame];
-}
-void VolumeSimulator::clearPressure(){
-    VkBuffer stagingBuffer;
-    VkDeviceMemory stagingMemory;
-    size_t bufferSize = gridSizeX * gridSizeY * gridSizeZ * sizeof(float);
-    simulationMemory->createStagingBuffer(bufferSize, stagingBuffer, stagingMemory);
-    void* data;
-    vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);
-    std::vector<float> initialData(gridSizeX * gridSizeY * gridSizeZ, 0.0f);
-    std::memcpy(data, initialData.data(), bufferSize);
-    vkUnmapMemory(device, stagingMemory);
-    simulationMemory->copyBuffer(stagingBuffer, simulationMemory->getPressure(), bufferSize);
-    simulationMemory->copyBuffer(stagingBuffer, simulationMemory->getPressureOut(), bufferSize);
-    vkDestroyBuffer(device, stagingBuffer, nullptr);
-    vkFreeMemory(device, stagingMemory, nullptr);
 }
 void VolumeSimulator::swapPressureBuffers(){
     simulationMemory->swapPressureBuffers();
@@ -686,36 +688,6 @@ void VolumeSimulator::addMemoryBarrier(VkCommandBuffer commandBuffer){
     memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memoryBarrier, 0, nullptr, 0, nullptr);
-}
-void VolumeSimulator::copyVelocityTemp(){
-    size_t bufferSize = gridSizeX * gridSizeY * gridSizeZ * 4 * sizeof(float);
-    VkCommandBuffer commandBuffer = computeCommandBuffers[currentFrame];
-    simulationMemory->copyBuffer(simulationMemory->getTempVelocity(), simulationMemory->getVelocity(), bufferSize);
-    std::vector<float> initialData(bufferSize, 0.0f);
-    VkBuffer stagingBuffer;
-    VkDeviceMemory stagingMemory;
-    simulationMemory->createStagingBuffer(bufferSize, stagingBuffer, stagingMemory);
-    void* data;
-    vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);
-    std::memcpy(data, initialData.data(), bufferSize);
-    vkUnmapMemory(device, stagingMemory);
-    simulationMemory->copyBuffer(stagingBuffer, simulationMemory->getTempVelocity(), bufferSize);
-    vkDestroyBuffer(device, stagingBuffer, nullptr);
-    vkFreeMemory(device, stagingMemory, nullptr);
-}
-void VolumeSimulator::resetFanAccess(){
-    VkBuffer stagingBuffer;
-    VkDeviceMemory stagingMemory;
-    size_t bufferSize = gridSizeX * gridSizeY * gridSizeZ * maxFans * sizeof(uint32_t);
-    simulationMemory->createStagingBuffer(bufferSize, stagingBuffer, stagingMemory);
-    std::vector<uint32_t> initialData(gridSizeX * gridSizeY * gridSizeZ * maxFans, 1);
-    void* data;
-    vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);
-    std::memcpy(data, initialData.data(), bufferSize);
-    vkUnmapMemory(device, stagingMemory);
-    simulationMemory->copyBuffer(stagingBuffer, simulationMemory->getFanAccess(), bufferSize);
-    vkDestroyBuffer(device, stagingBuffer, nullptr);
-    vkFreeMemory(device, stagingMemory, nullptr);
 }
 void VolumeSimulator::createSharedDescriptorSets(){
     VkDescriptorSetAllocateInfo allocInfo{};

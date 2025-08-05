@@ -13,8 +13,10 @@ layout(push_constant) uniform PushConstants {
     vec3 cellSize;
     float deltaTime;
     uint numFans;
+    uint _pad[2];
     vec3 fanPositions[8];
     vec3 fanDirections[8];
+    int displayPressure;
 } pc;
 
 uint idx3D(uint x, uint y, uint z){

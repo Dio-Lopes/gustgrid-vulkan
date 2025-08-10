@@ -315,6 +315,9 @@ public:
     void swapPressureBuffers() {
         std::swap(d_pressure, d_pressureOut);
     }
+    void swapIterationBuffers(){
+        std::swap(d_pressureTemp, d_pressureOut);
+    }
     static SimulationMemory &getInstance(VkDevice device = VK_NULL_HANDLE, VkPhysicalDevice physicalDevice = VK_NULL_HANDLE, VkCommandPool commandPool = VK_NULL_HANDLE, VkQueue computeQueue = VK_NULL_HANDLE){
         static std::unique_ptr<SimulationMemory> instance;
         if(!instance && device != VK_NULL_HANDLE)
@@ -570,7 +573,49 @@ void VolumeSimulator::addKernel(const std::string &name, const std::string &shad
     createKernelPipeline(kernel);
     kernels[name] = kernel;
 }
-VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants, bool resetVelocity, bool copyImages){
+void VolumeSimulator::updateVolumeImages(bool displayPressure){
+    VkCommandBuffer commandBuffer = computeCommandBuffers[currentFrame];
+    vkResetCommandBuffer(commandBuffer, 0);
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if(vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
+        throw std::runtime_error("Failed to begin command buffer");
+    copyBufferToImage(commandBuffer, simulationMemory->getTemperature(), simulationMemory->getTemperatureImage(), gridSizeX, gridSizeY, gridSizeZ);
+    if(displayPressure)
+        copyBufferToImage(commandBuffer, simulationMemory->getPressure(), simulationMemory->getVolumeImage(), gridSizeX, gridSizeY, gridSizeZ);
+    else copyBufferToImage(commandBuffer, simulationMemory->getSpeed(), simulationMemory->getVolumeImage(), gridSizeX, gridSizeY, gridSizeZ);
+    vkEndCommandBuffer(commandBuffer);
+    VkFence timeoutFence;
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    if(vkCreateFence(device, &fenceInfo, nullptr, &timeoutFence) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create timeout fence");
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = &computeFinishedSemaphores[currentFrame];
+    if(vkQueueSubmit(computeQueue, 1, &submitInfo, timeoutFence) != VK_SUCCESS){
+        vkDestroyFence(device, timeoutFence, nullptr);
+        throw std::runtime_error("Failed to submit compute command buffer");
+    }
+    const uint64_t TIMEOUT_NANOSECONDS = 5000000000ULL;
+    VkResult result = vkWaitForFences(device, 1, &timeoutFence, VK_TRUE, TIMEOUT_NANOSECONDS);
+    if(result == VK_TIMEOUT){
+        std::cerr << "WARNING: Updating volume images timed out after 5 seconds!" << std::endl;
+        vkDestroyFence(device, timeoutFence, nullptr);
+        vkResetCommandPool(device, commandPool, 0);
+        throw std::runtime_error("Updating volume images timed out");
+    }
+    else if(result != VK_SUCCESS){
+        vkDestroyFence(device, timeoutFence, nullptr);
+        throw std::runtime_error("Failed to wait for compute completion: " + std::to_string(result));
+    }
+    vkDestroyFence(device, timeoutFence, nullptr);
+}
+VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants){
     int numCells = gridSize.x * gridSize.y * gridSize.z;
     VkCommandBuffer commandBuffer = computeCommandBuffers[currentFrame];
     vkResetCommandBuffer(commandBuffer, 0);
@@ -589,12 +634,6 @@ VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::
     glm::uvec3 numGroups = (gridSize + kernel.workgroupSize - 1u) / kernel.workgroupSize;
     vkCmdDispatch(commandBuffer, numGroups.x, numGroups.y, numGroups.z);
     if(kernel.needsBarrier) addMemoryBarrier(commandBuffer);
-    if(copyImages){
-        copyBufferToImage(commandBuffer, simulationMemory->getTemperature(), simulationMemory->getTemperatureImage(), gridSizeX, gridSizeY, gridSizeZ);
-        if(pushConstants.displayPressure)
-            copyBufferToImage(commandBuffer, simulationMemory->getPressure(), simulationMemory->getVolumeImage(), gridSizeX, gridSizeY, gridSizeZ);
-        else copyBufferToImage(commandBuffer, simulationMemory->getSpeed(), simulationMemory->getVolumeImage(), gridSizeX, gridSizeY, gridSizeZ);
-    }
     vkEndCommandBuffer(commandBuffer);
     VkFence timeoutFence;
     VkFenceCreateInfo fenceInfo{};
@@ -628,8 +667,34 @@ VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::
     return computeFinishedSemaphores[currentFrame];
 }
 void VolumeSimulator::swapPressureBuffers(){
-    simulationMemory->swapPressureBuffers();
+    simulationMemory->swapIterationBuffers();
     updateDescriptorSetsWithBuffers();
+}
+void VolumeSimulator::copyFinalPressureToMain(){
+    uint32_t totalCells = gridSizeX * gridSizeY * gridSizeZ;
+    VkDeviceSize size = totalCells * sizeof(float);
+    VkBuffer srcBuffer = simulationMemory->getPressureTemp(); 
+    VkBuffer dstBuffer = simulationMemory->getPressure();
+    VulkanCommandUtils::copyBuffer(device, commandPool, computeQueue, srcBuffer, dstBuffer, size);
+}
+float VolumeSimulator::computeResidualSum(){
+    int numCells = gridSizeX * gridSizeY * gridSizeZ;
+    VkDeviceSize bufferSize = numCells * sizeof(float);
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingMemory;
+    simulationMemory->createStagingBuffer(bufferSize, stagingBuffer, stagingMemory);
+    simulationMemory->copyBuffer(simulationMemory->getResidual(), stagingBuffer, bufferSize);
+    void* data;
+    vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);   
+    float* residuals = static_cast<float*>(data);
+    float sum = 0.0f;
+    for(int i = 0; i < numCells; i++) {
+        sum += residuals[i];
+    }
+    vkUnmapMemory(device, stagingMemory);
+    vkDestroyBuffer(device, stagingBuffer, nullptr);
+    vkFreeMemory(device, stagingMemory, nullptr);
+    return sum / numCells;
 }
 void VolumeSimulator::cleanup(){
     for(auto &[name, kernel] : kernels){

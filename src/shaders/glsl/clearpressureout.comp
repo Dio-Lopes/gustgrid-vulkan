@@ -2,7 +2,7 @@
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(binding = 13, std430) restrict writeonly buffer FanAccessBuffer { uint fanAccess[]; };
+layout(binding = 2, std430) restrict writeonly buffer PressureOutBuffer { float pressureOut[]; };
 
 layout(push_constant) uniform PushConstants {
     vec3 gridSize;
@@ -20,8 +20,8 @@ layout(push_constant) uniform PushConstants {
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     uint totalCells = uint(pc.gridSize.x * pc.gridSize.y * pc.gridSize.z);
-    uint maxFans = 8;
-    uint totalElements = totalCells * maxFans;
-    if (idx >= totalElements) return;
-    fanAccess[idx] = 1u;
+    
+    if (idx >= totalCells) return;
+    
+    pressureOut[idx] = 0.0;
 }

@@ -58,10 +58,14 @@ public:
     VkImageView getTemperatureImageView();
     void setSolidGrid(const uint32_t* solidGrid, size_t numCells = gridSizeX * gridSizeY * gridSizeZ);
     void setHeatSources(const float* heatSources, size_t numCells = gridSizeX * gridSizeY * gridSizeZ);
-    VkSemaphore dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants = {}, bool resetVelocity = false, bool copyImages = false);
+    VkSemaphore dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants = {});
+    void updateVolumeImages(bool displayPressure);
     void initSimulation(int numCells);
     void updateDescriptorSetsWithBuffers();
     void swapPressureBuffers();
+    void copyFinalPressureToMain();
+    float computeResidualSum();
+    void setCurrentFrame(uint32_t frame) { currentFrame = frame; }
     void cleanupSimulation();
     static std::vector<char> readFile(const std::string &filename);
 private:

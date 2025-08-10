@@ -2,7 +2,7 @@
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(binding = 1, std430) restrict writeonly buffer PressureBuffer { float pressure[]; };
+layout(binding = 8, std430) restrict writeonly buffer PressureTempBuffer { float pressureTemp[]; };
 layout(binding = 2, std430) restrict writeonly buffer PressureOutBuffer { float pressureOut[]; };
 
 layout(push_constant) uniform PushConstants {
@@ -24,6 +24,6 @@ void main() {
     
     if (idx >= totalCells) return;
     
-    pressure[idx] = 0.0;
+    pressureTemp[idx] = 0.0;
     pressureOut[idx] = 0.0;
 }

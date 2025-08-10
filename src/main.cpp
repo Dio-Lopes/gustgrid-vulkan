@@ -402,7 +402,7 @@ private:
     bool shouldUpdateGrid = true;
     int maxPressureIterations = 8;
     float pressureTolerance = 1e-6f;
-    VolumeSimulator::ComputePushConstants currentPushConstants;
+    VolumeSimulator::ComputePushConstants currentPushConstants = {};
     float dt = 0.0f;
 
     std::map<char, Character> Characters;
@@ -497,6 +497,7 @@ private:
         volumeSimulator->addKernel("diffuseKernel", "src/shaders/compiled/diffusekernel.comp.spv");
         volumeSimulator->addKernel("clearBuffers", "src/shaders/compiled/clearbuffers.comp.spv", glm::uvec3(64, 1, 1), true);
         volumeSimulator->addKernel("clearPressure", "src/shaders/compiled/clearpressure.comp.spv", glm::uvec3(64, 1, 1), true);
+        volumeSimulator->addKernel("clearPressureOut", "src/shaders/compiled/clearpressureout.comp.spv", glm::uvec3(64, 1, 1), true);
         volumeSimulator->addKernel("copyVelocityTemp", "src/shaders/compiled/copyvelocitytemp.comp.spv", glm::uvec3(64, 1, 1), true);
         volumeSimulator->addKernel("resetFanAccess", "src/shaders/compiled/resetfanaccess.comp.spv", glm::uvec3(64, 1, 1), true);
         createVolumeGeometry();
@@ -675,38 +676,53 @@ private:
         recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
         updateUniformBuffer(currentFrame);
         if(shouldUpdateGrid){
-            vkQueueWaitIdle(graphicsQueue);
             resetSolidGrid();
             shouldUpdateGrid = false;
         }
+        updateVolumeTextures();
         currentPushConstants.deltaTime = 1.0f / 60.0f;
+        volumeSimulator->setCurrentFrame(currentFrame);
         uint32_t totalCells = gridSizeX * gridSizeY * gridSizeZ;
         uint32_t fanElements = totalCells * maxFans;
         VolumeSimulator::ComputePushConstants dummyConstants = {};
         dummyConstants.gridSize = glm::vec3(gridSizeX, gridSizeY, gridSizeZ);
+        dummyConstants.worldMin = glm::vec3(worldMinX, worldMinY, worldMinZ);
+        dummyConstants.worldMax = glm::vec3(worldMaxX, worldMaxY, worldMaxZ);
+        dummyConstants.cellSize = glm::vec3(cellSizeX, cellSizeY, cellSizeZ);
+        dummyConstants.numFans = 0;
         if(shouldUpdateFans){
-            updateVolumeTextures();
-            VkSemaphore resetFanAccessSemaphore = volumeSimulator->dispatchKernel("resetFanAccess", glm::uvec3(fanElements, 1, 1), dummyConstants, false, false);
-            VkSemaphore computeSemaphore = volumeSimulator->dispatchKernel("fanUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
+            VkSemaphore resetFanAccessSemaphore = volumeSimulator->dispatchKernel("resetFanAccess", glm::uvec3(fanElements, 1, 1), dummyConstants);
+            VkSemaphore computeSemaphore = volumeSimulator->dispatchKernel("fanUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
+            vkQueueWaitIdle(graphicsQueue);
             shouldUpdateFans = false;
         }
-        VkSemaphore velocitySemaphore = volumeSimulator->dispatchKernel("velocityUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, true, true);
-        VkSemaphore copyTempSemaphore = volumeSimulator->dispatchKernel("copyVelocityTemp", glm::uvec3(totalCells, 1, 1), dummyConstants, false, false);
-        VkSemaphore clearPressureSemaphore = volumeSimulator->dispatchKernel("clearPressure", glm::uvec3(totalCells, 1, 1), dummyConstants, false, false);
-        VkSemaphore divergenceSemaphore = volumeSimulator->dispatchKernel("computeDivergence", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
+        VkSemaphore velocitySemaphore = volumeSimulator->dispatchKernel("velocityUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
+        VkSemaphore copyTempSemaphore = volumeSimulator->dispatchKernel("copyVelocityTemp", glm::uvec3(totalCells, 1, 1), dummyConstants);
+        VkSemaphore divergenceSemaphore = volumeSimulator->dispatchKernel("computeDivergence", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
+        VkSemaphore clearPressureTemp = volumeSimulator->dispatchKernel("clearPressure", glm::uvec3(totalCells, 1, 1), dummyConstants);
         for(int iter = 0; iter < maxPressureIterations; iter++){
-            VkSemaphore jacobiSemaphore = volumeSimulator->dispatchKernel("pressureJacobi", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
+            VkSemaphore jacobiSemaphore = volumeSimulator->dispatchKernel("pressureJacobi", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
             if(iter % 4 == 3 || iter == maxPressureIterations - 1){
-                VkSemaphore residualSemaphore = volumeSimulator->dispatchKernel("computeResidual", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
+                VkSemaphore residualSemaphore = volumeSimulator->dispatchKernel("computeResidual", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
+                float residualSum = volumeSimulator->computeResidualSum();
+                uint32_t totalCells = gridSizeX * gridSizeY * gridSizeZ;
+                float avgResidual = residualSum / totalCells;
+                
+                if(avgResidual < pressureTolerance){
+                    volumeSimulator->swapPressureBuffers();
+                    break;
+                }
             }
             volumeSimulator->swapPressureBuffers();
         }
-        VkSemaphore gradientSemaphore = volumeSimulator->dispatchKernel("subtractPressureGradient", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
-        VkSemaphore boundarySemaphore = volumeSimulator->dispatchKernel("enforceBoundaryConditions", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
-        VkSemaphore clearTempBuffers = volumeSimulator->dispatchKernel("clearBuffers", glm::uvec3(totalCells, 1, 1), dummyConstants, false, false);
-        VkSemaphore advectSemaphore = volumeSimulator->dispatchKernel("computeAdvection", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
-        VkSemaphore normalizeKernel = volumeSimulator->dispatchKernel("normalizeForward", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
-        VkSemaphore diffuseKernel = volumeSimulator->dispatchKernel("diffuseKernel", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, false, false);
+        volumeSimulator->copyFinalPressureToMain();
+        VkSemaphore gradientSemaphore = volumeSimulator->dispatchKernel("subtractPressureGradient", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
+        VkSemaphore boundarySemaphore = volumeSimulator->dispatchKernel("enforceBoundaryConditions", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
+        VkSemaphore clearTempBuffers = volumeSimulator->dispatchKernel("clearBuffers", glm::uvec3(totalCells, 1, 1), dummyConstants);
+        VkSemaphore advectSemaphore = volumeSimulator->dispatchKernel("computeAdvection", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
+        VkSemaphore normalizeKernel = volumeSimulator->dispatchKernel("normalizeForward", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
+        VkSemaphore diffuseKernel = volumeSimulator->dispatchKernel("diffuseKernel", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
+        volumeSimulator->updateVolumeImages(currentPushConstants.displayPressure);
         updateVolumeDescriptorSets();
         vkQueueWaitIdle(graphicsQueue);
         std::vector<VkSemaphore> waitSemaphores;
@@ -1795,7 +1811,7 @@ private:
         vkFreeMemory(device, stagingBufferMemory, nullptr);
     }
     void updateVolumeTextures(){
-        VolumeSimulator::ComputePushConstants pushConstants;
+        VolumeSimulator::ComputePushConstants pushConstants = {};
         pushConstants.gridSize = glm::vec3(gridSizeX, gridSizeY, gridSizeZ);
         pushConstants.worldMin = glm::vec3(worldMinX, worldMinY, worldMinZ);
         pushConstants.worldMax = glm::vec3(worldMaxX, worldMaxY, worldMaxZ);
@@ -2069,6 +2085,7 @@ private:
     }
     void updateTextVertexBuffer(){
         std::vector<TextVertex> vertices;
+        vertices.reserve(1000 * 4);
         for(const auto &textObject : textObjects){
             if(!textObject.enabled) continue;
             if(!textObject.text.empty()){
@@ -2240,7 +2257,6 @@ private:
             vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
         } catch(const std::exception& e) {
             std::cerr << "ERROR in updateUIDescriptorSet for '" << name << "': " << e.what() << std::endl;
-            // Don't rethrow - continue execution to avoid crash
         }
     }
     void prepareTextureAtlas(){
@@ -2921,6 +2937,7 @@ private:
                 if(i<2 && app->backFanLocations[i+1] <= 0.0f && app->backFanLocations[i+1] - app->backFanLocations[i] >= -2.5f) app->backFanLocations[i] = app->backFanLocations[i+1] + 2.5f;
                 else if(i>0 && app->backFanLocations[i] - app->backFanLocations[i-1] >= -2.5f) app->backFanLocations[i] = app->backFanLocations[i-1] - 2.5f;
                 app->backFanLocations[i] = std::clamp(app->backFanLocations[i], -5.0f, 0.0f);
+                app->shouldUpdateFans = true;
                 return;
             } else if(app->hoverElement != "") return;
         } else{

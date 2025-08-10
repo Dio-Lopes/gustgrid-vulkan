@@ -74,9 +74,12 @@ void main(){
     float fx = x0 - float(xi);
     float fy = y0 - float(yi);
     float fz = z0 - float(zi);
-    xi = max(0, min(xi, int(pc.gridSize.x) - 2));
-    yi = max(0, min(yi, int(pc.gridSize.y) - 2));
-    zi = max(0, min(zi, int(pc.gridSize.z) - 2));
+    xi = clamp(xi, 0, int(pc.gridSize.x) - 2);
+    yi = clamp(yi, 0, int(pc.gridSize.y) - 2);
+    zi = clamp(zi, 0, int(pc.gridSize.z) - 2);
+    fx = clamp(fx, 0.0, 1.0);
+    fy = clamp(fy, 0.0, 1.0);
+    fz = clamp(fz, 0.0, 1.0);
     vec3 newVel = v;
     float sumW = 0.0;
     vec3 acc = vec3(0.0);

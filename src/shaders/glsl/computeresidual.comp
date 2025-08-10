@@ -2,7 +2,7 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 layout(binding = 0, std430) restrict readonly buffer DivergenceBuffer { float divergence[]; };
-layout(binding = 1, std430) restrict readonly buffer PressureInBuffer { float pressure[]; };
+layout(binding = 8, std430) restrict readonly buffer PressureTempBuffer { float pressureTemp[]; };
 layout(binding = 3, std430) restrict writeonly buffer ResidualBuffer { float residual[]; };
 layout(binding = 14, std430) restrict readonly buffer SolidGridBuffer { uint solidGrid[]; };
 
@@ -33,7 +33,7 @@ void main(){
         return;
     }
     float laplacian = 0.0;
-    float centerPressure = pressure[idx];
+    float centerPressure = pressureTemp[idx];
     const ivec3 neighbors[6] = {
         ivec3(-1, 0, 0), ivec3(1, 0, 0),
         ivec3(0, -1, 0), ivec3(0, 1, 0),
@@ -51,7 +51,7 @@ void main(){
             if(solidGrid[nidx] == 0){
                 int axis = n / 2;
                 float h = cellSizes[axis];
-                laplacian += (pressure[nidx] - centerPressure) / (h * h);
+                laplacian += (pressureTemp[nidx] - centerPressure) / (h * h);
             }
         }
     }

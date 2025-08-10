@@ -7,29 +7,29 @@ layout (binding = 14, std430) restrict readonly buffer SolidGridBuffer { uint so
 
 
 layout(push_constant) uniform PushConstants {
-    vec3 gridSize;
-    vec3 worldMin;
-    vec3 worldMax;
-    vec3 cellSize;
+    vec4 gridSize;
+    vec4 worldMin;
+    vec4 worldMax;
+    vec4 cellSize;
     float deltaTime;
     uint numFans;
-    uint _pad[2];
-    vec3 fanPositions[8];
-    vec3 fanDirections[8];
     int displayPressure;
+    uint padding;
+    vec4 fanPositions[8];
+    vec4 fanDirections[8];
 } pc;
 
 uint idx3D(uint x, uint y, uint z){
     return uint(x + y * pc.gridSize.x + z * pc.gridSize.x * pc.gridSize.y);
 }
 
-bool isValidFluidCell(uint x, uint y, uint z){
-    if(x < 0 || x >= pc.gridSize.x || 
-       y < 0 || y >= pc.gridSize.y || 
-       z < 0 || z >= pc.gridSize.z){
+bool isValidFluidCell(int x, int y, int z){
+    if(x < 0 || x >= int(pc.gridSize.x) || 
+       y < 0 || y >= int(pc.gridSize.y) || 
+       z < 0 || z >= int(pc.gridSize.z)){
         return false;
     }
-    uint idx = idx3D(x, y, z);
+    uint idx = idx3D(uint(x), uint(y), uint(z));
     return solidGrid[idx] == 0;
 }
 
@@ -42,21 +42,28 @@ void main(){
         divergence[idx] = 0.0;
         return;
     }
+    
     float div = 0.0;
-    if(gid.x < uint(pc.gridSize.x) - 1 && gid.x > 0){
-        float uRight = isValidFluidCell(gid.x + 1, gid.y, gid.z) ? velocity[idx3D(gid.x + 1, gid.y, gid.z)].x : 0.0;
-        float uLeft = isValidFluidCell(gid.x - 1, gid.y, gid.z) ? velocity[idx3D(gid.x - 1, gid.y, gid.z)].x : 0.0;
-        div += (uRight - uLeft) * (1.0 / (2.0 * pc.cellSize.x));
+    if(gid.x > 0 && gid.x < uint(pc.gridSize.x) - 1){
+        uint rightIdx = idx3D(gid.x + 1, gid.y, gid.z);
+        uint leftIdx = idx3D(gid.x - 1, gid.y, gid.z);
+        float uRight = isValidFluidCell(int(gid.x) + 1, int(gid.y), int(gid.z)) ? velocity[rightIdx].x : 0.0;
+        float uLeft = isValidFluidCell(int(gid.x) - 1, int(gid.y), int(gid.z)) ? velocity[leftIdx].x : 0.0;
+        div += (uRight - uLeft) / (2.0 * pc.cellSize.x);
     }
-    if(gid.y < uint(pc.gridSize.y) - 1 && gid.y > 0){
-        float vUp = isValidFluidCell(gid.x, gid.y + 1, gid.z) ? velocity[idx3D(gid.x, gid.y + 1, gid.z)].y : 0.0;
-        float vDown = isValidFluidCell(gid.x, gid.y - 1, gid.z) ? velocity[idx3D(gid.x, gid.y - 1, gid.z)].y : 0.0;
-        div += (vUp - vDown) * (1.0 / (2.0 * pc.cellSize.y));
+    if(gid.y > 0 && gid.y < uint(pc.gridSize.y) - 1){
+        uint upIdx = idx3D(gid.x, gid.y + 1, gid.z);
+        uint downIdx = idx3D(gid.x, gid.y - 1, gid.z);
+        float vUp = isValidFluidCell(int(gid.x), int(gid.y) + 1, int(gid.z)) ? velocity[upIdx].y : 0.0;
+        float vDown = isValidFluidCell(int(gid.x), int(gid.y) - 1, int(gid.z)) ? velocity[downIdx].y : 0.0;
+        div += (vUp - vDown) / (2.0 * pc.cellSize.y);
     }
-    if(gid.z < uint(pc.gridSize.z) - 1 && gid.z > 0){
-        float wFront = isValidFluidCell(gid.x, gid.y, gid.z + 1) ? velocity[idx3D(gid.x, gid.y, gid.z + 1)].z : 0.0;
-        float wBack = isValidFluidCell(gid.x, gid.y, gid.z - 1) ? velocity[idx3D(gid.x, gid.y, gid.z - 1)].z : 0.0;
-        div += (wFront - wBack) * (1.0 / (2.0 * pc.cellSize.z));
+    if(gid.z > 0 && gid.z < uint(pc.gridSize.z) - 1){
+        uint frontIdx = idx3D(gid.x, gid.y, gid.z + 1);
+        uint backIdx = idx3D(gid.x, gid.y, gid.z - 1);
+        float wFront = isValidFluidCell(int(gid.x), int(gid.y), int(gid.z) + 1) ? velocity[frontIdx].z : 0.0;
+        float wBack = isValidFluidCell(int(gid.x), int(gid.y), int(gid.z) - 1) ? velocity[backIdx].z : 0.0;
+        div += (wFront - wBack) / (2.0 * pc.cellSize.z);
     }
     divergence[idx] = div;
 }

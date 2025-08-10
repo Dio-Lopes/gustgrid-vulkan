@@ -81,10 +81,9 @@ void main(){
         float tempThreshold = ambientTemp + 0.5;
         if(volumeVal < 1e-4 && tempValue < tempThreshold){
             emptySteps++;
-            if(emptySteps > 2.0) worldStep = min(baseWorldStep * 2.0, baseWorldStep * (1.0 + float(emptySteps - 2) * 0.5));
+            if(emptySteps > 2.0) worldStep = min(baseWorldStep * 8.0, baseWorldStep * (1.0 + float(emptySteps - 2)));
             currentWorldPos += rayDir * worldStep;
             currentTexCoord = (currentWorldPos - ubo.worldMin) / (ubo.worldMax - ubo.worldMin);
-            if(any(lessThan(currentTexCoord, vec3(-0.1))) || any(greaterThan(currentTexCoord, vec3(1.1)))) break;
             continue;
         } else{
             emptySteps = 0;

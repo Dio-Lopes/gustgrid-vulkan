@@ -38,16 +38,16 @@ private:
     std::map<std::string, ComputeKernel> kernels;
 public:
     struct ComputePushConstants {
-        alignas(16) glm::vec3 gridSize;
-        alignas(16) glm::vec3 worldMin;
-        alignas(16) glm::vec3 worldMax;
-        alignas(16) glm::vec3 cellSize;
+        alignas(16) glm::vec4 gridSize;
+        alignas(16) glm::vec4 worldMin;
+        alignas(16) glm::vec4 worldMax;
+        alignas(16) glm::vec4 cellSize;
         alignas(4) float deltaTime;
         alignas(4) uint32_t numFans;
-        alignas(8) uint32_t _pad[2];
-        alignas(16) glm::vec3 fanPositions[maxFans];
-        alignas(16) glm::vec3 fanDirections[maxFans];
         alignas(4) int displayPressure;
+        alignas(4) uint32_t padding;
+        alignas(16) glm::vec4 fanPositions[maxFans];
+        alignas(16) glm::vec4 fanDirections[maxFans];
     };
     VolumeSimulator(VkDevice device, VkCommandPool commandPool, VkQueue computeQueue, VkPhysicalDevice physicalDevice);
     ~VolumeSimulator();

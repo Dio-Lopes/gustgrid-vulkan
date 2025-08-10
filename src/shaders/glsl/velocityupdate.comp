@@ -8,16 +8,16 @@ layout(binding = 13, std430) restrict readonly buffer FanAccessBuffer { uint fan
 layout (binding = 14, std430) restrict readonly buffer SolidGridBuffer { uint solidGrid[]; };
 
 layout(push_constant) uniform PushConstants {
-    vec3 gridSize;
-    vec3 worldMin;
-    vec3 worldMax;
-    vec3 cellSize;
+    vec4 gridSize;
+    vec4 worldMin;
+    vec4 worldMax;
+    vec4 cellSize;
     float deltaTime;
     uint numFans;
-    uint _pad[2];
-    vec3 fanPositions[8];
-    vec3 fanDirections[8];
     int displayPressure;
+    uint padding;
+    vec4 fanPositions[8];
+    vec4 fanDirections[8];
 } pc;
 
 const float c_referenceDensity = 1.225;
@@ -77,9 +77,6 @@ void main(){
     xi = clamp(xi, 0, int(pc.gridSize.x) - 2);
     yi = clamp(yi, 0, int(pc.gridSize.y) - 2);
     zi = clamp(zi, 0, int(pc.gridSize.z) - 2);
-    fx = clamp(fx, 0.0, 1.0);
-    fy = clamp(fy, 0.0, 1.0);
-    fz = clamp(fz, 0.0, 1.0);
     vec3 newVel = v;
     float sumW = 0.0;
     vec3 acc = vec3(0.0);
@@ -114,8 +111,8 @@ void main(){
     for(uint f=0; f<pc.numFans; f++){
         uint fanIdx = f * numCells + idx;
         if(fanAccess[fanIdx] == 0) continue;
-        vec3 fanPos = pc.fanPositions[f];
-        vec3 fanDir = pc.fanDirections[f];
+        vec3 fanPos = pc.fanPositions[f].xyz;
+        vec3 fanDir = pc.fanDirections[f].xyz;
         vec3 toCell = vec3(worldX, worldY, worldZ) - fanPos;
         float distSq = dot(toCell, toCell);
         if(distSq < 1e-6) continue;
@@ -148,7 +145,7 @@ void main(){
         float maxBuoyancyAccel = 20.0;
         buoyancyForce = clamp(buoyancyForce, -maxBuoyancyAccel, maxBuoyancyAccel);
         buoyancyForce *= (1.0 - solidProximity * 0.2);
-        newVel.y -= buoyancyForce * pc.deltaTime;
+        newVel.y += buoyancyForce * pc.deltaTime;
     }
     if(solidCount > 0 && tempDiff > 10.0){
         float backPressure = solidProximity * tempDiff * 0.001;

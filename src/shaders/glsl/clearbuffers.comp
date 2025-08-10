@@ -7,16 +7,16 @@ layout(binding = 11, std430) restrict writeonly buffer WeightSumBuffer { float w
 layout(binding = 12, std430) restrict writeonly buffer TempSumDissBuffer { float tempSumDiss[]; };
 
 layout(push_constant) uniform PushConstants {
-    vec3 gridSize;
-    vec3 worldMin;
-    vec3 worldMax;
-    vec3 cellSize;
+    vec4 gridSize;
+    vec4 worldMin;
+    vec4 worldMax;
+    vec4 cellSize;
     float deltaTime;
     uint numFans;
-    uint _pad[2];
-    vec3 fanPositions[8];
-    vec3 fanDirections[8];
     int displayPressure;
+    uint padding;
+    vec4 fanPositions[8];
+    vec4 fanDirections[8];
 } pc;
 
 void main(){

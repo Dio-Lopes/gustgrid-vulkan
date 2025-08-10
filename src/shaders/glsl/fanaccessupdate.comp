@@ -5,16 +5,16 @@ layout(binding = 13, std430) restrict buffer FanAccessBuffer { uint fanAccess[];
 layout (binding = 14, std430) restrict readonly buffer SolidGridBuffer { uint solidGrid[]; };
 
 layout(push_constant) uniform PushConstants {
-    vec3 gridSize;
-    vec3 worldMin;
-    vec3 worldMax;
-    vec3 cellSize;
+    vec4 gridSize;
+    vec4 worldMin;
+    vec4 worldMax;
+    vec4 cellSize;
     float deltaTime;
     uint numFans;
-    uint _pad[2];
-    vec3 fanPositions[8];
-    vec3 fanDirections[8];
     int displayPressure;
+    uint padding;
+    vec4 fanPositions[8];
+    vec4 fanDirections[8];
 } pc;
 
 uint idx3D(uint x, uint y, uint z){
@@ -39,11 +39,11 @@ void main(){
                           (gid.z + 0.5) * pc.cellSize.z + pc.worldMin.z);
     for(int f = 0; f < pc.numFans; f++){
         uint fanIdx = f * numCells + idx;
-        vec3 fanPos = pc.fanPositions[f];
+        vec3 fanPos = pc.fanPositions[f].xyz;
         vec3 rayDir = targetPos - fanPos;
         float rayLength = length(rayDir);
         if(rayLength < max(pc.cellSize.x, max(pc.cellSize.y, pc.cellSize.z))){
-            fanAccess[fanIdx] = 1; 
+            fanAccess[fanIdx] = 1;
             continue;
         }
         float minCellSize = min(pc.cellSize.x, min(pc.cellSize.y, pc.cellSize.z));
@@ -54,18 +54,18 @@ void main(){
         for(int step = 1; step < numSteps; step++){
             float t = step * stepSize;
             vec3 samplePos = fanPos + rayDir * t;
-            uvec3 voxel = uvec3(floor((samplePos.x - pc.worldMin.x) / pc.cellSize.x),
+            ivec3 voxel = ivec3(floor((samplePos.x - pc.worldMin.x) / pc.cellSize.x),
                                 floor((samplePos.y - pc.worldMin.y) / pc.cellSize.y),
                                 floor((samplePos.z - pc.worldMin.z) / pc.cellSize.z));
-            if(voxel.x < 0 || voxel.x >= uint(pc.gridSize.x) ||
-               voxel.y < 0 || voxel.y >= uint(pc.gridSize.y) ||
-               voxel.z < 0 || voxel.z >= uint(pc.gridSize.z)){
+            if(voxel.x < 0 || voxel.x >= int(pc.gridSize.x) ||
+               voxel.y < 0 || voxel.y >= int(pc.gridSize.y) ||
+               voxel.z < 0 || voxel.z >= int(pc.gridSize.z)){
                 hit = true;
                 continue;
             }
-            if(voxel.x == uint(gid.x) && voxel.y == uint(gid.y) && voxel.z == uint(gid.z))
+            if(voxel.x == int(gid.x) && voxel.y == int(gid.y) && voxel.z == int(gid.z))
                 break;
-            uint voxelIdx = idx3D(voxel.x, voxel.y, voxel.z);
+            uint voxelIdx = idx3D(uint(voxel.x), uint(voxel.y), uint(voxel.z));
             if(solidGrid[voxelIdx] != 0 || fanAccess[f * numCells + voxelIdx] == 0){
                 hit = true;
                 break;

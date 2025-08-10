@@ -11,16 +11,16 @@ layout(binding = 12, std430) restrict writeonly buffer TempSumDissBuffer { float
 layout(binding = 14, std430) restrict readonly buffer SolidGridBuffer { uint solidGrid[]; };
 
 layout(push_constant) uniform PushConstants {
-    vec3 gridSize;
-    vec3 worldMin;
-    vec3 worldMax;
-    vec3 cellSize;
+    vec4 gridSize;
+    vec4 worldMin;
+    vec4 worldMax;
+    vec4 cellSize;
     float deltaTime;
     uint numFans;
-    uint _pad[2];
-    vec3 fanPositions[8];
-    vec3 fanDirections[8];
     int displayPressure;
+    uint padding;
+    vec4 fanPositions[8];
+    vec4 fanDirections[8];
 } pc;
 
 const float velocityThreshold = 0.1;
@@ -64,9 +64,9 @@ void main(){
     int xi = int(floor(fx));
     int yi = int(floor(fy));
     int zi = int(floor(fz));
-    xi = clamp(xi, 0, int(pc.gridSize.x) - 1);
-    yi = clamp(yi, 0, int(pc.gridSize.y) - 1);
-    zi = clamp(zi, 0, int(pc.gridSize.z) - 1);
+    xi = max(0, min(xi, int(pc.gridSize.x) - 2));
+    yi = max(0, min(yi, int(pc.gridSize.y) - 2));
+    zi = max(0, min(zi, int(pc.gridSize.z) - 2));
     float wx = fx - float(xi);
     float wy = fy - float(yi);
     float wz = fz - float(zi);
@@ -85,9 +85,9 @@ void main(){
                    ny < 0 || ny >= int(pc.gridSize.y) ||
                    nz < 0 || nz >= int(pc.gridSize.z)) continue;
                 uint nidx = idx3D(uint(nx), uint(ny), uint(nz));
-                float weight = (dx == 0 ? (1.0 - wx) : wx) *
-                               (dy == 0 ? (1.0 - wy) : wy) *
-                               (dz == 0 ? (1.0 - wz) : wz);
+                float weight = (dx == 1 ? wx : (1.0 - wx)) *
+                               (dy == 1 ? wy : (1.0 - wy)) *
+                               (dz == 1 ? wz : (1.0 - wz));
                 if(weight > 1e-6){
                     atomicAdd(tempSum[nidx], tempToAdvect * weight);
                     atomicAdd(weightSum[nidx], weight);
@@ -98,9 +98,9 @@ void main(){
     }
     float lostWeight = 1.0 - sumValidWeights;
     if(lostWeight > 1e-6){
-        for(int dx = 0; dx <= 1; dx++){
-            for(int dy = 0; dy <= 1; dy++){
-                for(int dz = 0; dz <= 1; dz++){
+        for(int dx = -1; dx <= 1; dx++){
+            for(int dy = -1; dy <= 1; dy++){
+                for(int dz = -1; dz <= 1; dz++){
                     int nx = xi + dx;
                     int ny = yi + dy;
                     int nz = zi + dz;

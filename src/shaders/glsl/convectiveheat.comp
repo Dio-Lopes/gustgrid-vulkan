@@ -1,0 +1,89 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+layout(binding = 5, std430) restrict readonly buffer VelocityBuffer { vec4 velocity[]; };
+layout(binding = 6, std430) restrict readonly buffer SpeedBuffer { float speed[]; };
+layout(binding = 9, std430) restrict buffer TempTemperatureBuffer { float tempTemperature[]; };
+layout(binding = 14, std430) restrict readonly buffer SolidGridBuffer { uint solidGrid[]; };
+
+layout(push_constant) uniform PushConstants {
+    vec4 gridSize;
+    vec4 worldMin;
+    vec4 worldMax;
+    vec4 cellSize;
+    float deltaTime;
+    uint numFans;
+    int displayPressure;
+    uint padding;
+    vec4 fanPositions[8];
+    vec4 fanDirections[8];
+} pc;
+
+const float velocityThreshold = 0.1;
+const float c_ambientTemperature = 22.0;
+const float c_heatSourceStrength = 1.0;
+const float c_thermalDiffusivity = 1.5e-5;
+
+uint idx3D(uint x, uint y, uint z){
+    return uint(x + y * pc.gridSize.x + z * pc.gridSize.x * pc.gridSize.y);
+}
+
+void main(){
+    uvec3 gid = gl_GlobalInvocationID;
+    if(gid.x >= uint(pc.gridSize.x) || gid.y >= uint(pc.gridSize.y) || gid.z >= uint(pc.gridSize.z))
+        return;
+    uint idx = idx3D(gid.x, gid.y, gid.z);
+    float currentTemp = tempTemperature[idx];
+    float tempDiff = currentTemp - c_ambientTemperature;
+    if(abs(tempDiff) < 1.0) return;
+    vec3 v = velocity[idx].xyz;
+    float totalHeatTransfer = 0.0;
+    float totalWeight = 0.0;
+    const ivec3 neighbors[6] = {
+        ivec3(-1, 0, 0), ivec3(1, 0, 0),
+        ivec3(0, -1, 0), ivec3(0, 1, 0),
+        ivec3(0, 0, -1), ivec3(0, 0, 1)
+    };
+    for(int n = 0; n < 6; n++){
+        int ni = int(gid.x) + neighbors[n][0];
+        int nj = int(gid.y) + neighbors[n][1];
+        int nk = int(gid.z) + neighbors[n][2];
+        if(ni < 0 || ni >= int(pc.gridSize.x) ||
+           nj < 0 || nj >= int(pc.gridSize.y) ||
+           nk < 0 || nk >= int(pc.gridSize.z)) continue;
+        uint nidx = idx3D(uint(ni), uint(nj), uint(nk));
+        float neighborTemp = tempTemperature[nidx];
+        float neighborSpeed = speed[nidx];
+        vec3 neighborVelocity = velocity[nidx].xyz;
+        vec3 relativeVelocity = v - neighborVelocity;
+        float relativeSpeed = length(relativeVelocity);
+        vec3 direction = vec3(neighbors[n]);
+        float flowAlignment = dot(relativeVelocity, direction);
+        float convectionCoeff = 0.1 + min(relativeSpeed * 0.2, 1.0);
+        if(flowAlignment > 0.1) convectionCoeff *= (1.0 + flowAlignment);
+        float tempGradient = neighborTemp - currentTemp;
+        float pullingEffect = 1.0;
+        if(neighborSpeed > 1.0 && neighborTemp < currentTemp){
+            pullingEffect = 1.0 + min(neighborSpeed * 0.3, 1.5);
+            if(flowAlignment > 0.0) pullingEffect *= (1.0 + flowAlignment * 0.5);
+        }
+        if(tempDiff > 5.0 && neighborSpeed > 0.5){
+            float stipingEffect = min(neighborSpeed * 0.2, 1.0);
+            pullingEffect *= (1.0 + stipingEffect);
+        }
+        if(solidGrid[idx] != 0 && solidGrid[nidx] == 0 && neighborSpeed > 0.2){
+            pullingEffect *= (1.0 + neighborSpeed * 0.4);
+            convectionCoeff *= 2.0;
+        }
+        float heatTransfer = convectionCoeff * tempGradient * pullingEffect;
+        float weight = 1.0 + relativeSpeed * 0.1;
+        totalHeatTransfer += heatTransfer * weight;
+        totalWeight += weight;
+    }
+    if(totalWeight > 0.0){
+        float avgHeatTransfer = totalHeatTransfer / totalWeight;
+        float maxHeatTransfer = abs(tempDiff) * 0.6;
+        avgHeatTransfer = clamp(avgHeatTransfer, -maxHeatTransfer, maxHeatTransfer);
+        tempTemperature[idx] = currentTemp + avgHeatTransfer * pc.deltaTime;
+    }
+}

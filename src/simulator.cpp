@@ -482,6 +482,7 @@ void VolumeSimulator::setHeatSources(const float* heatSources, size_t numCells){
     vkFreeMemory(device, stagingMemory, nullptr);
 }
 void VolumeSimulator::updateDescriptorSetsWithBuffers(){
+    if(g_vulkanDeviceValid && computeQueue != VK_NULL_HANDLE) vkQueueWaitIdle(computeQueue);
     std::vector<VkBuffer> buffers = {
         simulationMemory->getDivergence(),
         simulationMemory->getPressure(),
@@ -581,6 +582,11 @@ void VolumeSimulator::updateVolumeImages(bool displayPressure){
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if(vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
         throw std::runtime_error("Failed to begin command buffer");
+    VkMemoryBarrier memoryBarrier{};
+    memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    memoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &memoryBarrier, 0, nullptr, 0, nullptr);
     copyBufferToImage(commandBuffer, simulationMemory->getTemperature(), simulationMemory->getTemperatureImage(), gridSizeX, gridSizeY, gridSizeZ);
     if(displayPressure)
         copyBufferToImage(commandBuffer, simulationMemory->getPressure(), simulationMemory->getVolumeImage(), gridSizeX, gridSizeY, gridSizeZ);
@@ -633,7 +639,6 @@ VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::
         vkCmdPushConstants(commandBuffer, kernel.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &pushConstants);
     glm::uvec3 numGroups = (gridSize + kernel.workgroupSize - 1u) / kernel.workgroupSize;
     vkCmdDispatch(commandBuffer, numGroups.x, numGroups.y, numGroups.z);
-    if(kernel.needsBarrier) addMemoryBarrier(commandBuffer);
     vkEndCommandBuffer(commandBuffer);
     VkFence timeoutFence;
     VkFenceCreateInfo fenceInfo{};
@@ -667,8 +672,11 @@ VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::
     return computeFinishedSemaphores[currentFrame];
 }
 void VolumeSimulator::swapPressureBuffers(){
+    if(g_vulkanDeviceValid && computeQueue != VK_NULL_HANDLE) vkQueueWaitIdle(computeQueue);
     simulationMemory->swapIterationBuffers();
+    if(g_vulkanDeviceValid && computeQueue != VK_NULL_HANDLE) vkQueueWaitIdle(computeQueue);
     updateDescriptorSetsWithBuffers();
+    if(g_vulkanDeviceValid && computeQueue != VK_NULL_HANDLE) vkQueueWaitIdle(computeQueue);
 }
 void VolumeSimulator::copyFinalPressureToMain(){
     uint32_t totalCells = gridSizeX * gridSizeY * gridSizeZ;
@@ -694,7 +702,7 @@ float VolumeSimulator::computeResidualSum(){
     vkUnmapMemory(device, stagingMemory);
     vkDestroyBuffer(device, stagingBuffer, nullptr);
     vkFreeMemory(device, stagingMemory, nullptr);
-    return sum / numCells;
+    return sum;
 }
 void VolumeSimulator::cleanup(){
     for(auto &[name, kernel] : kernels){

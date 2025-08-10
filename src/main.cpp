@@ -401,7 +401,7 @@ private:
     bool shouldUpdateFans = true;
     bool shouldUpdateGrid = true;
     int maxPressureIterations = 8;
-    float pressureTolerance = 1e-6f;
+    float pressureTolerance = 1e-4f;
     VolumeSimulator::ComputePushConstants currentPushConstants = {};
     float dt = 0.0f;
 
@@ -485,21 +485,28 @@ private:
         volumeSimulator->initialize(computeDescriptorSetLayout, computeDescriptorPool);
         int numCells = gridSizeX * gridSizeY * gridSizeZ;
         volumeSimulator->initSimulation(numCells);
-        volumeSimulator->addKernel("velocityUpdate", "src/shaders/compiled/velocityupdate.comp.spv");
-        volumeSimulator->addKernel("fanUpdate", "src/shaders/compiled/fanaccessupdate.comp.spv");
-        volumeSimulator->addKernel("computeDivergence", "src/shaders/compiled/computedivergence.comp.spv");
-        volumeSimulator->addKernel("pressureJacobi", "src/shaders/compiled/pressurejacobi.comp.spv");
-        volumeSimulator->addKernel("computeResidual", "src/shaders/compiled/computeresidual.comp.spv");
-        volumeSimulator->addKernel("subtractPressureGradient", "src/shaders/compiled/subtractpressuregradient.comp.spv");
-        volumeSimulator->addKernel("enforceBoundaryConditions", "src/shaders/compiled/enforceboundaryconditions.comp.spv");
-        volumeSimulator->addKernel("computeAdvection", "src/shaders/compiled/computeadvection.comp.spv");
-        volumeSimulator->addKernel("normalizeForward", "src/shaders/compiled/normalizeforward.comp.spv");
-        volumeSimulator->addKernel("diffuseKernel", "src/shaders/compiled/diffusekernel.comp.spv");
+        volumeSimulator->addKernel("velocityUpdate", "src/shaders/compiled/velocityupdate.comp.spv", glm::uvec3(8, 8, 8), true);
+        volumeSimulator->addKernel("fanUpdate", "src/shaders/compiled/fanaccessupdate.comp.spv", glm::uvec3(8, 8, 8), true);
+        volumeSimulator->addKernel("computeDivergence", "src/shaders/compiled/computedivergence.comp.spv", glm::uvec3(8, 8, 8), true);
+        volumeSimulator->addKernel("pressureJacobi", "src/shaders/compiled/pressurejacobi.comp.spv", glm::uvec3(8, 8, 8), true);
+        volumeSimulator->addKernel("computeResidual", "src/shaders/compiled/computeresidual.comp.spv", glm::uvec3(8, 8, 8), true);
+        volumeSimulator->addKernel("subtractPressureGradient", "src/shaders/compiled/subtractpressuregradient.comp.spv", glm::uvec3(8, 8, 8), true);
+        volumeSimulator->addKernel("enforceBoundaryConditions", "src/shaders/compiled/enforceboundaryconditions.comp.spv", glm::uvec3(8, 8, 8), true);
+        volumeSimulator->addKernel("computeAdvection", "src/shaders/compiled/computeadvection.comp.spv", glm::uvec3(8, 8, 8), true);
+        volumeSimulator->addKernel("normalizeForward", "src/shaders/compiled/normalizeforward.comp.spv", glm::uvec3(8, 8, 8), true);
+        volumeSimulator->addKernel("convectiveHeat", "src/shaders/compiled/convectiveheat.comp.spv", glm::uvec3(8, 8, 8), true);
+        volumeSimulator->addKernel("diffuseKernel", "src/shaders/compiled/diffusekernel.comp.spv", glm::uvec3(8, 8, 8), true);
         volumeSimulator->addKernel("clearBuffers", "src/shaders/compiled/clearbuffers.comp.spv", glm::uvec3(64, 1, 1), true);
         volumeSimulator->addKernel("clearPressure", "src/shaders/compiled/clearpressure.comp.spv", glm::uvec3(64, 1, 1), true);
         volumeSimulator->addKernel("clearPressureOut", "src/shaders/compiled/clearpressureout.comp.spv", glm::uvec3(64, 1, 1), true);
         volumeSimulator->addKernel("copyVelocityTemp", "src/shaders/compiled/copyvelocitytemp.comp.spv", glm::uvec3(64, 1, 1), true);
         volumeSimulator->addKernel("resetFanAccess", "src/shaders/compiled/resetfanaccess.comp.spv", glm::uvec3(64, 1, 1), true);
+        currentPushConstants.gridSize = glm::vec4(gridSizeX, gridSizeY, gridSizeZ, 1.0f);
+        currentPushConstants.worldMin = glm::vec4(worldMinX, worldMinY, worldMinZ, 1.0f);
+        currentPushConstants.worldMax = glm::vec4(worldMaxX, worldMaxY, worldMaxZ, 1.0f);
+        currentPushConstants.cellSize = glm::vec4(cellSizeX, cellSizeY, cellSizeZ, 1.0f);
+        currentPushConstants.displayPressure = pressureEnabled;
+        currentPushConstants.deltaTime = 1.0f / 60.0f;
         createVolumeGeometry();
         createVolumeUniformBuffers();
         createVolumeDescriptorSetLayout();
@@ -679,23 +686,23 @@ private:
             resetSolidGrid();
             shouldUpdateGrid = false;
         }
-        updateVolumeTextures();
-        currentPushConstants.deltaTime = 1.0f / 60.0f;
+        currentPushConstants.displayPressure = pressureEnabled;
         volumeSimulator->setCurrentFrame(currentFrame);
         uint32_t totalCells = gridSizeX * gridSizeY * gridSizeZ;
         uint32_t fanElements = totalCells * maxFans;
         VolumeSimulator::ComputePushConstants dummyConstants = {};
-        dummyConstants.gridSize = glm::vec3(gridSizeX, gridSizeY, gridSizeZ);
-        dummyConstants.worldMin = glm::vec3(worldMinX, worldMinY, worldMinZ);
-        dummyConstants.worldMax = glm::vec3(worldMaxX, worldMaxY, worldMaxZ);
-        dummyConstants.cellSize = glm::vec3(cellSizeX, cellSizeY, cellSizeZ);
+        dummyConstants.gridSize = glm::vec4(gridSizeX, gridSizeY, gridSizeZ, 1.0f);
+        dummyConstants.worldMin = glm::vec4(worldMinX, worldMinY, worldMinZ, 1.0f);
+        dummyConstants.worldMax = glm::vec4(worldMaxX, worldMaxY, worldMaxZ, 1.0f);
+        dummyConstants.cellSize = glm::vec4(cellSizeX, cellSizeY, cellSizeZ, 1.0f);
         dummyConstants.numFans = 0;
         if(shouldUpdateFans){
+            updateVolumeTextures();
             VkSemaphore resetFanAccessSemaphore = volumeSimulator->dispatchKernel("resetFanAccess", glm::uvec3(fanElements, 1, 1), dummyConstants);
             VkSemaphore computeSemaphore = volumeSimulator->dispatchKernel("fanUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
-            vkQueueWaitIdle(graphicsQueue);
             shouldUpdateFans = false;
         }
+        VkSemaphore clearTempBuffers1 = volumeSimulator->dispatchKernel("clearBuffers", glm::uvec3(totalCells, 1, 1), dummyConstants);
         VkSemaphore velocitySemaphore = volumeSimulator->dispatchKernel("velocityUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
         VkSemaphore copyTempSemaphore = volumeSimulator->dispatchKernel("copyVelocityTemp", glm::uvec3(totalCells, 1, 1), dummyConstants);
         VkSemaphore divergenceSemaphore = volumeSimulator->dispatchKernel("computeDivergence", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
@@ -707,7 +714,6 @@ private:
                 float residualSum = volumeSimulator->computeResidualSum();
                 uint32_t totalCells = gridSizeX * gridSizeY * gridSizeZ;
                 float avgResidual = residualSum / totalCells;
-                
                 if(avgResidual < pressureTolerance){
                     volumeSimulator->swapPressureBuffers();
                     break;
@@ -718,9 +724,9 @@ private:
         volumeSimulator->copyFinalPressureToMain();
         VkSemaphore gradientSemaphore = volumeSimulator->dispatchKernel("subtractPressureGradient", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
         VkSemaphore boundarySemaphore = volumeSimulator->dispatchKernel("enforceBoundaryConditions", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
-        VkSemaphore clearTempBuffers = volumeSimulator->dispatchKernel("clearBuffers", glm::uvec3(totalCells, 1, 1), dummyConstants);
         VkSemaphore advectSemaphore = volumeSimulator->dispatchKernel("computeAdvection", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
         VkSemaphore normalizeKernel = volumeSimulator->dispatchKernel("normalizeForward", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
+        VkSemaphore convectiveKernel = volumeSimulator->dispatchKernel("convectiveHeat", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
         VkSemaphore diffuseKernel = volumeSimulator->dispatchKernel("diffuseKernel", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
         volumeSimulator->updateVolumeImages(currentPushConstants.displayPressure);
         updateVolumeDescriptorSets();
@@ -1811,43 +1817,43 @@ private:
         vkFreeMemory(device, stagingBufferMemory, nullptr);
     }
     void updateVolumeTextures(){
-        VolumeSimulator::ComputePushConstants pushConstants = {};
-        pushConstants.gridSize = glm::vec3(gridSizeX, gridSizeY, gridSizeZ);
-        pushConstants.worldMin = glm::vec3(worldMinX, worldMinY, worldMinZ);
-        pushConstants.worldMax = glm::vec3(worldMaxX, worldMaxY, worldMaxZ);
-        pushConstants.cellSize = glm::vec3(cellSizeX, cellSizeY, cellSizeZ);
-        pushConstants.displayPressure = pressureEnabled;
-        std::vector<glm::vec3> fanLocations;
-        std::vector<glm::vec3> fanDirections;
+        std::vector<glm::vec4> fanLocations(maxFans);
+        std::vector<glm::vec4> fanDirections(maxFans);
+        int index = 0;
         if(topFanEnabled){
-            fanLocations.push_back(glm::vec3(-0.22f, 4.2f, 1.6f));
-            fanDirections.push_back(glm::vec3(0.0f, 1.0f, 0.0f));
+            fanLocations[index] = glm::vec4(-0.22f, 4.2f, 1.6f, 1.0f);
+            fanDirections[index] = glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);
+            index++;
         }
         if(frontFanEnabled){
-            fanLocations.push_back(glm::vec3(0.48f, 2.6f, 3.5f));
-            fanDirections.push_back(glm::vec3(0.0f, 0.0f, 1.0f));
+            fanLocations[index] = glm::vec4(0.48f, 2.6f, 3.5f, 1.0f);
+            fanDirections[index] = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
+            index++;
         }
         if(cpuFanEnabled){
-            fanLocations.push_back(glm::vec3(0.1f, 2.4f, 0.85f));
-            fanDirections.push_back(glm::vec3(0.0f, 0.0f, 1.0f));
+            fanLocations[index] = glm::vec4(0.1f, 2.4f, 0.85f, 1.0f);
+            fanDirections[index] = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
+            index++;
         }
         if(gpuEnabled){
-            fanLocations.push_back(glm::vec3(-0.36f, 0.75f, 0.34f));
-            fanLocations.push_back(glm::vec3(-0.36f, 0.75f, 2.71f));
-            fanDirections.push_back(glm::vec3(0.0f, 1.0f, 0.0f));
-            fanDirections.push_back(glm::vec3(0.0f, 1.0f, 0.0f));
+            fanLocations[index] = glm::vec4(-0.36f, 0.75f, 0.34f, 1.0f);
+            fanDirections[index] = glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);
+            index++;
+            fanLocations[index] = glm::vec4(-0.36f, 0.75f, 2.71f, 1.0f);
+            fanDirections[index] = glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);
+            index++;
         }
         for(int i=0; i<3; i++){
             if(backFanLocations[i] > 0.0f) continue;
-            fanLocations.push_back(glm::vec3(0.0f, 2.36343f + backFanLocations[i], -3.36426f));
-            fanDirections.push_back(glm::vec3(0.0f, 0.0f, 1.0f));
+            fanLocations[index] = glm::vec4(0.0f, 2.36343f + backFanLocations[i], -3.36426f, 1.0f);
+            fanDirections[index] = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
+            index++;
         }
-        pushConstants.numFans = static_cast<uint32_t>(fanLocations.size());
-        for(int i=0; i<pushConstants.numFans; i++){
-            pushConstants.fanPositions[i] = fanLocations[i];
-            pushConstants.fanDirections[i] = fanDirections[i];
+        currentPushConstants.numFans = index;
+        for(int i=0; i<currentPushConstants.numFans && i<maxFans; i++){
+            currentPushConstants.fanPositions[i] = fanLocations[i];
+            currentPushConstants.fanDirections[i] = fanDirections[i];
         }
-        currentPushConstants = pushConstants;
     }
     void resetSolidGrid(){
         if(!volumeSimulator){

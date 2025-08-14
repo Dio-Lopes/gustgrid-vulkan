@@ -3,8 +3,9 @@
         {
             "name": "Windows",
             "includePath": [
-                "${workspaceFolder}/**",
-                "${VK_SDK_PATH}/Include"
+                "${workspaceFolder}/include",
+                "${workspaceFolder}/src",
+                "${workspaceFolder}/**"
             ],
             "defines": [
                 "_DEBUG",
@@ -12,8 +13,8 @@
                 "_UNICODE",
                 "WIN32"
             ],
-            "compilerPath": "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/VC/Tools/MSVC/14.29.30133/bin/Hostx64/x64/cl.exe",
-            "cStandard": "c20",
+            "compilerPath": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/*/bin/Hostx64/x64/cl.exe",
+            "cStandard": "c17",
             "cppStandard": "c++20",
             "intelliSenseMode": "windows-msvc-x64",
             "configurationProvider": "ms-vscode.cmake-tools",
@@ -22,12 +23,11 @@
         {
             "name": "macOS",
             "includePath": [
+                "${workspaceFolder}/include",
+                "${workspaceFolder}/src",
                 "${workspaceFolder}/**",
                 "/usr/local/include",
-                "/usr/local/include/vulkan",
-                "/opt/homebrew/include",
-                "/opt/homebrew/include/vulkan",
-                "${VK_SDK_PATH}/Include"
+                "/opt/homebrew/include"
             ],
             "defines": [
                 "_DEBUG",
@@ -36,9 +36,9 @@
                 "VULKAN_HPP_NO_EXCEPTIONS"
             ],
             "compilerPath": "/usr/bin/clang++",
-            "cStandard": "c20",
+            "cStandard": "c17",
             "cppStandard": "c++20",
-            "intelliSenseMode": "macos-clang-x64",
+            "intelliSenseMode": "macos-clang-arm64",
             "configurationProvider": "ms-vscode.cmake-tools",
             "compileCommands": "${workspaceFolder}/build/compile_commands.json",
             "macFrameworkPath": [

@@ -145,13 +145,16 @@ See the [open issues](https://github.com/josephHelfenbein/gustgrid-vulkan/issues
 To compile the project on MacOS, you'll need:
 1. **Homebrew** - Install Homebrew at https://brew.sh/
 2. **Xcode Command Line Tools** - Install Xcode Command Line Tools by running `xcode-select --install` in the terminal.
-3. **Packages** - In the terminal, install prerequisite packages by running:
+3. **Packages** - In the terminal, install prerequisite packages by running in VSCode:
 ```bash
 brew install molten-vk glfw glm ninja cmake libomp
+export LDFLAGS="-L/opt/homebrew/opt/libomp/lib"
+export CPPFLAGS="-I/opt/homebrew/opt/libomp/include"
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 export DYLD_LIBRARY_PATH="/usr/local/lib:/opt/homebrew/lib:$DYLD_LIBRARY_PATH"
 ```
-4. Run the `MacOS Release` configuration in VSCode.
+4. Download and install Vulkan SDK from https://vulkan.lunarg.com/sdk/home
+5. Run the `MacOS Release` configuration in VSCode.
 
 ### Windows
 

@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.10)
 
 project(GustGridVulkan)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 set(IS_MACOS FALSE)
 if(APPLE)
     set(IS_MACOS TRUE)

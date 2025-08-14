@@ -1,5 +1,19 @@
 {
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+    "C_Cpp.default.compilerPath": "/usr/bin/clang++",
+    "C_Cpp.default.intelliSenseMode": "macos-clang-arm64",
+    "glsllint.glslangValidatorArgs": [
+        "-V"
+    ],
+    "glsl-analyzer.targetEnv": "vulkan1.2",
+    "glsl-analyzer.defaultVersion": "450",
+    "glslls.targetEnvironment": "vulkan1.2",
+    "glslls.defaultVersion": "450",
     "files.associations": {
+        "*.vert": "glsl",
+        "*.frag": "glsl",
+        "*.comp": "glsl",
         "vector": "cpp",
         "__bit_reference": "cpp",
         "__hash_table": "cpp",

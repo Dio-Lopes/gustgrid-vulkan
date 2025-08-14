@@ -178,7 +178,7 @@ void main(){
             uint downIdx = idx3D(gid.x, gid.y - 1, gid.z);
             uint upIdx = idx3D(gid.x, gid.y + 1, gid.z);
             if(solidGrid[downIdx] == 0 && solidGrid[upIdx] == 0)
-                gradient.y = (temperature[upIdx] - temperature[downIdx]) / (2.0 * pc.cellSize.y);
+                gradient.x = (temperature[upIdx] - temperature[downIdx]) / (2.0 * pc.cellSize.y);
         } if(gid.z > 0 && gid.z < uint(pc.gridSize.z) - 1){
             uint backIdx = idx3D(gid.x, gid.y, gid.z - 1);
             uint frontIdx = idx3D(gid.x, gid.y, gid.z + 1);

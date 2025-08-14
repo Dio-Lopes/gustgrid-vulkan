@@ -283,7 +283,7 @@ public:
         d_weightSum = pool.allocate(numCells * sizeof(float), usage, properties);
         d_tempSumDiss = pool.allocate(numCells * sizeof(float), usage, properties);
         d_fanAccess = pool.allocate(numCells * maxFans * sizeof(uint32_t), usage, properties);
-        d_solidGrid = pool.allocate(numCells * sizeof(unsigned char), usage, properties);
+        d_solidGrid = pool.allocate(numCells * sizeof(uint32_t), usage, properties);
         initializeBuffers(numCells);
         uint32_t gridX = gridSizeX;
         uint32_t gridY = gridSizeY;
@@ -397,9 +397,9 @@ private:
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingMemory, nullptr);
         size_t fanAccessBufferSize = numCells * maxFans * sizeof(uint32_t);
-        size_t solidGridBufferSize = numCells * sizeof(unsigned char);
+        size_t solidGridBufferSize = numCells * sizeof(uint32_t);
         std::vector<uint32_t> initialFanAccessData(numCells * maxFans, 0);
-        std::vector<unsigned char> initialSolidGridData(numCells, 0);
+        std::vector<uint32_t> initialSolidGridData(numCells, 0);
         createStagingBuffer(fanAccessBufferSize, stagingBuffer, stagingMemory);
         vkMapMemory(device, stagingMemory, 0, fanAccessBufferSize, 0 , &data);
         std::memcpy(data, initialFanAccessData.data(), fanAccessBufferSize);
@@ -453,17 +453,17 @@ void VolumeSimulator::initSimulation(int numCells){
 void VolumeSimulator::setSolidGrid(const uint32_t* solidGrid, size_t numCells){
     if(numCells != static_cast<size_t>(gridSizeX * gridSizeY * gridSizeZ))
         throw std::runtime_error("Solid grid size mismatch");
-    std::vector<unsigned char> charData(numCells);
+    std::vector<uint32_t> u32Data(numCells);
     for(size_t i = 0; i < numCells; i++)
-        charData[i] = static_cast<unsigned char>(solidGrid[i]);
+        u32Data[i] = solidGrid[i] ? 1u : 0u;
     VkBuffer stagingBuffer;
     VkDeviceMemory stagingMemory;
-    simulationMemory->createStagingBuffer(numCells * sizeof(unsigned char), stagingBuffer, stagingMemory);
+    simulationMemory->createStagingBuffer(numCells * sizeof(uint32_t), stagingBuffer, stagingMemory);
     void* data;
-    vkMapMemory(device, stagingMemory, 0, numCells * sizeof(unsigned char), 0, &data);
-    std::memcpy(data, charData.data(), numCells * sizeof(unsigned char));
+    vkMapMemory(device, stagingMemory, 0, numCells * sizeof(uint32_t), 0, &data);
+    std::memcpy(data, u32Data.data(), numCells * sizeof(uint32_t));
     vkUnmapMemory(device, stagingMemory);
-    simulationMemory->copyBuffer(stagingBuffer, simulationMemory->getSolidGrid(), numCells * sizeof(unsigned char));
+    simulationMemory->copyBuffer(stagingBuffer, simulationMemory->getSolidGrid(), numCells * sizeof(uint32_t));
     vkDestroyBuffer(device, stagingBuffer, nullptr);
     vkFreeMemory(device, stagingMemory, nullptr);
 }

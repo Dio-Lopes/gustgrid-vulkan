@@ -113,22 +113,7 @@ if(IS_MACOS)
 else()
     find_library(Vulkan_LIBRARY vulkan-1 ${VK_SDK_PATH}/Lib)
     find_package(Freetype REQUIRED)
-    if(NOT FREETYPE_FOUND)
-        find_path(FREETYPE_INCLUDE_DIRS ft2build.h
-            PATHS
-                ${CMAKE_SOURCE_DIR}/include/freetype
-                ${CMAKE_SOURCE_DIR}/include
-                "C:/Program Files/freetype/include"
-                "C:/vcpkg/installed/x64-windows/include"
-        )
-        find_library(FREETYPE_LIBRARIES
-            NAMES freetype freetype.lib
-            PATHS
-                ${CMAKE_SOURCE_DIR}/lib
-                "C:/Program Files/freetype/lib"
-                "C:/vcpkg/installed/x64-windows/lib"
-        )
-    endif()
+
     target_link_libraries(${PROJECT_NAME} ${Vulkan_LIBRARY} glfw3_mt ${FREETYPE_LIBRARIES})
     target_include_directories(${PROJECT_NAME} PRIVATE
         ${FREETYPE_INCLUDE_DIRS}

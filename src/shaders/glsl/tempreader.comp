@@ -1,6 +1,6 @@
 #version 450
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 2, local_size_y = 1, local_size_z = 1) in;
 
 layout(binding = 7, std430) restrict readonly buffer TemperatureBuffer { float temperature[]; };
 layout(binding = 16, std430) restrict writeonly buffer ProbeBuffer { float values[]; };
@@ -28,7 +28,7 @@ uint idx3D(uint x, uint y, uint z){
 }
 
 void main(){
-    uint sel = pc.padding & 1u;
+    uint sel = gl_GlobalInvocationID.x & 1u;
     ivec3 idx3 = (sel == 0u) ? CPU_INDEX : GPU_INDEX;
     uint gx = uint(clamp(idx3.x, 0, int(pc.gridSize.x) - 1));
     uint gy = uint(clamp(idx3.y, 0, int(pc.gridSize.y) - 1));

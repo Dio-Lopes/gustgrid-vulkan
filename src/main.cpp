@@ -234,9 +234,9 @@ struct UIData{
     VkBuffer vertexBuffer;
     VkDeviceMemory vertexBufferMemory;
     void* vertexBufferMapped;
-    glm::vec2 size = glm::vec2(1.0f);
-    glm::vec2 position = glm::vec2(0.0f);
     std::string name;
+    glm::vec2 position = glm::vec2(0.0f);
+    glm::vec2 size = glm::vec2(1.0f);
     bool anchorLeft = true;
     bool enabled = true;
 };
@@ -504,7 +504,7 @@ private:
         volumeSimulator->addKernel("clearPressureOut", "src/shaders/compiled/clearpressureout.comp.spv", glm::uvec3(64, 1, 1), true);
         volumeSimulator->addKernel("copyVelocityTemp", "src/shaders/compiled/copyvelocitytemp.comp.spv", glm::uvec3(64, 1, 1), true);
         volumeSimulator->addKernel("resetFanAccess", "src/shaders/compiled/resetfanaccess.comp.spv", glm::uvec3(64, 1, 1), true);
-        volumeSimulator->addKernel("tempReader", "src/shaders/compiled/tempreader.comp.spv", glm::uvec3(1, 1, 1), true);
+        volumeSimulator->addKernel("tempReader", "src/shaders/compiled/tempreader.comp.spv", glm::uvec3(2, 1, 1), true);
         currentPushConstants.gridSize = glm::vec4(gridSizeX, gridSizeY, gridSizeZ, 1.0f);
         currentPushConstants.worldMin = glm::vec4(worldMinX, worldMinY, worldMinZ, 1.0f);
         currentPushConstants.worldMax = glm::vec4(worldMaxX, worldMaxY, worldMaxZ, 1.0f);
@@ -733,14 +733,10 @@ private:
         VkSemaphore convectiveKernel = volumeSimulator->dispatchKernel("convectiveHeat", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
         VkSemaphore diffuseKernel = volumeSimulator->dispatchKernel("diffuseKernel", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
         volumeSimulator->updateVolumeImages(currentPushConstants.displayPressure);
-        VolumeSimulator::ComputePushConstants probePC = currentPushConstants;
-        probePC.padding = 0;
-        volumeSimulator->dispatchKernel("tempReader", glm::uvec3(1, 1, 1), probePC);
-        probePC.padding = 1;
-        volumeSimulator->dispatchKernel("tempReader", glm::uvec3(1, 1, 1), probePC);
+        volumeSimulator->dispatchKernel("tempReader", glm::uvec3(2, 1, 1), currentPushConstants);
         updateVolumeDescriptorSets();
         vkQueueWaitIdle(graphicsQueue);
-        float* probeOut = volumeSimulator->getProbeOut();
+        auto probeOut = volumeSimulator->getProbeOut();
         char cpuText[32];
         snprintf(cpuText, sizeof(cpuText), "CPU Temperature: %0.2f°C", probeOut[0]);
         textObjects[14].text = cpuText;
@@ -1521,8 +1517,7 @@ private:
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
+        barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = 1;
         int32_t mipWidth = texWidth;
         int32_t mipHeight = texHeight;

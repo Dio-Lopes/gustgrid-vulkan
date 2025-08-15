@@ -5,6 +5,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
+#include <string>
 #include <vector>
 #include <cstring>
 #include <cstdlib>
@@ -260,7 +261,7 @@ public:
         d_divergence = d_pressure = d_pressureOut = d_residual =
         d_tempVelocity = d_velocity = d_speed = d_temperature =
         d_pressureTemp = d_tempTemperature = d_tempSum = d_heatSources =
-        d_weightSum = d_tempSumDiss = d_fanAccess = d_solidGrid = VK_NULL_HANDLE;
+        d_weightSum = d_tempSumDiss = d_fanAccess = d_solidGrid = d_probeOut = VK_NULL_HANDLE;
         allocatedGridSize = 0;
     }
     void ensureAllocated(int numCells){
@@ -578,19 +579,26 @@ void VolumeSimulator::addKernel(const std::string &name, const std::string &shad
     createKernelPipeline(kernel);
     kernels[name] = kernel;
 }
-float* VolumeSimulator::getProbeOut() const {
+std::array<float, 2> VolumeSimulator::getProbeOut() const {
     VkDeviceSize bufferSize = 2 * sizeof(float);
     VkBuffer stagingBuffer;
     VkDeviceMemory stagingMemory;
     simulationMemory->createStagingBuffer(bufferSize, stagingBuffer, stagingMemory);
     simulationMemory->copyBuffer(simulationMemory->getProbeOut(), stagingBuffer, bufferSize);
-    void* data;
-    vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);
-    float* probeOut = static_cast<float*>(data);
+    void* data = nullptr;
+    VkResult mapRes = vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);
+    if(mapRes != VK_SUCCESS || data == nullptr){
+        if(mapRes == VK_SUCCESS) vkUnmapMemory(device, stagingMemory);
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingMemory, nullptr);
+        throw std::runtime_error("Failed to map probeOut staging memory");
+    }
+    std::array<float, 2> result = {0.0f, 0.0f};
+    std::memcpy(result.data(), data, static_cast<size_t>(bufferSize));
     vkUnmapMemory(device, stagingMemory);
     vkDestroyBuffer(device, stagingBuffer, nullptr);
     vkFreeMemory(device, stagingMemory, nullptr);
-    return probeOut;
+    return result;
 }
 void VolumeSimulator::updateVolumeImages(bool displayPressure){
     VkCommandBuffer commandBuffer = computeCommandBuffers[currentFrame];

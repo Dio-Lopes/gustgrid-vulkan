@@ -4,21 +4,33 @@
             "name": "Windows",
             "includePath": [
                 "${workspaceFolder}/include",
+                "${workspaceFolder}/include/**",
                 "${workspaceFolder}/src",
-                "${workspaceFolder}/**"
+                "${workspaceFolder}/**",
+                "${env:VK_SDK_PATH}/Include",
+                "${env:VULKAN_SDK}/Include"
             ],
             "defines": [
-                "_DEBUG",
+                "WIN32",
                 "UNICODE",
                 "_UNICODE",
-                "WIN32"
+                "VK_USE_PLATFORM_WIN32_KHR",
+                "_CRT_SECURE_NO_WARNINGS"
             ],
-            "compilerPath": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/*/bin/Hostx64/x64/cl.exe",
+            "compilerPath": "cl.exe",
             "cStandard": "c17",
             "cppStandard": "c++20",
             "intelliSenseMode": "windows-msvc-x64",
-            "configurationProvider": "ms-vscode.cmake-tools",
-            "compileCommands": "${workspaceFolder}/build/compile_commands.json"
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/include",
+                    "${workspaceFolder}/include/**",
+                    "${workspaceFolder}/src",
+                    "${env:VK_SDK_PATH}/Include",
+                    "${env:VULKAN_SDK}/Include"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            }
         },
         {
             "name": "macOS",

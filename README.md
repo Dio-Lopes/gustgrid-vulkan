@@ -160,10 +160,14 @@ export DYLD_LIBRARY_PATH="/usr/local/lib:/opt/homebrew/lib:$DYLD_LIBRARY_PATH"
 
 To compile the project on Windows, you'll need:
 1. **Vulkan SDK** - Download and install Vulkan SDK from https://vulkan.lunarg.com/sdk/home
-2. **Visual Studio 2022** - Install Visual Studio 2022 at https://visualstudio.microsoft.com/downloads/ installing the `Linux, Mac, and embedded development with C++` toolset, and also the individual components `Windows 10 SDK` and `MSVC v143`.
+2. **Visual Studio 2022** - Install Visual Studio 2022 at https://visualstudio.microsoft.com/downloads/ installing the `Desktop development with C++` workload, and the components `Windows 10/11 SDK` and `MSVC v143`.
 3. **CMake** - Install CMake at https://cmake.org/download/.
-4. Run the `Windows Release` configuration in VSCode.
-
+4. **vcpkg (for FreeType)**
+   - Clone vcpkg (once):
+     - PowerShell: `git clone https://github.com/microsoft/vcpkg.git "$env:USERPROFILE\vcpkg"` then `& "$env:USERPROFILE\vcpkg\bootstrap-vcpkg.bat"`
+   - Install FreeType for x64-MSVC:
+     - `& "$env:USERPROFILE\vcpkg\vcpkg.exe" install freetype:x64-windows`
+5. Run the `Windows Release` configuration in VSCode.
 
 <!-- LICENSE -->
 ## License

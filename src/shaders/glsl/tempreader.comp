@@ -1,0 +1,38 @@
+#version 450
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 7, std430) restrict readonly buffer TemperatureBuffer { float temperature[]; };
+layout(binding = 16, std430) restrict writeonly buffer ProbeBuffer { float values[]; };
+
+layout(push_constant) uniform PushConstants {
+    vec4 gridSize;
+    vec4 worldMin;
+    vec4 worldMax;
+    vec4 cellSize;
+    float deltaTime;
+    uint numFans;
+    int displayPressure;
+    uint padding;
+    vec4 fanPositions[8];
+    vec4 fanDirections[8];
+} pc;
+
+//  (-1.45f+2.0f)/(4.0f/gridSizeX)-0.5f, (2.45f+4.5f)/(9.0f/gridSizeY)-0.5f, (1.45f+4.0f)/(8.0f/gridSizeZ)-0.5f)
+const ivec3 CPU_INDEX = ivec3(8, 197, 87);
+//  (0.25f+2.0f)/(4.0f/gridSizeX)-0.5f, (0.0f+4.5f)/(9.0f/gridSizeY)-0.5f, (3.5f+4.0f)/(8.0f/gridSizeZ)-0.5f)
+const ivec3 GPU_INDEX = ivec3(35, 154, 119);
+
+uint idx3D(uint x, uint y, uint z){
+    return uint(x + y * pc.gridSize.x + z * pc.gridSize.x * pc.gridSize.y);
+}
+
+void main(){
+    uint sel = pc.padding & 1u;
+    ivec3 idx3 = (sel == 0u) ? CPU_INDEX : GPU_INDEX;
+    uint gx = uint(clamp(idx3.x, 0, int(pc.gridSize.x) - 1));
+    uint gy = uint(clamp(idx3.y, 0, int(pc.gridSize.y) - 1));
+    uint gz = uint(clamp(idx3.z, 0, int(pc.gridSize.z) - 1));
+    uint linear = idx3D(gx, gy, gz);
+    values[sel] = temperature[linear];
+}

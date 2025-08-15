@@ -223,6 +223,7 @@ struct TextData{
     glm::vec2 position = glm::vec2(0.0f);
     float scale = 1.0f;
     bool anchorLeft = true;
+    bool anchorTop = true;
     bool enabled = true;
 };
 struct UIData{
@@ -305,6 +306,8 @@ private:
         {.text = "Fan 2:", .color = glm::vec3(0.0f), .position = {420.0f, 430.0f}, .scale = 0.6f, .anchorLeft = false},
         {.text = "Fan 3:", .color = glm::vec3(0.0f), .position = {420.0f, 480.0f}, .scale = 0.6f, .anchorLeft = false},
         {.text = "Show Pressure", .color = glm::vec3(0.0f), .position = {420.0f, 670.0f}, .scale = 0.6f, .anchorLeft = false},
+        {.text = "CPU Temperature", .color = glm::vec3(1.0f), .position = {320.0f, 80.0f}, .scale = 0.5f, .anchorLeft = false, .anchorTop = false},
+        {.text = "GPU Temperature", .color = glm::vec3(1.0f), .position = {320.0f, 40.0f}, .scale = 0.5f, .anchorLeft = false, .anchorTop = false}
     };
     VkPipeline textPipeline;
     VkPipelineLayout textPipelineLayout;
@@ -501,6 +504,7 @@ private:
         volumeSimulator->addKernel("clearPressureOut", "src/shaders/compiled/clearpressureout.comp.spv", glm::uvec3(64, 1, 1), true);
         volumeSimulator->addKernel("copyVelocityTemp", "src/shaders/compiled/copyvelocitytemp.comp.spv", glm::uvec3(64, 1, 1), true);
         volumeSimulator->addKernel("resetFanAccess", "src/shaders/compiled/resetfanaccess.comp.spv", glm::uvec3(64, 1, 1), true);
+        volumeSimulator->addKernel("tempReader", "src/shaders/compiled/tempreader.comp.spv", glm::uvec3(1, 1, 1), true);
         currentPushConstants.gridSize = glm::vec4(gridSizeX, gridSizeY, gridSizeZ, 1.0f);
         currentPushConstants.worldMin = glm::vec4(worldMinX, worldMinY, worldMinZ, 1.0f);
         currentPushConstants.worldMax = glm::vec4(worldMaxX, worldMaxY, worldMaxZ, 1.0f);
@@ -729,8 +733,22 @@ private:
         VkSemaphore convectiveKernel = volumeSimulator->dispatchKernel("convectiveHeat", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
         VkSemaphore diffuseKernel = volumeSimulator->dispatchKernel("diffuseKernel", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
         volumeSimulator->updateVolumeImages(currentPushConstants.displayPressure);
+        VolumeSimulator::ComputePushConstants probePC = currentPushConstants;
+        probePC.padding = 0;
+        volumeSimulator->dispatchKernel("tempReader", glm::uvec3(1, 1, 1), probePC);
+        probePC.padding = 1;
+        volumeSimulator->dispatchKernel("tempReader", glm::uvec3(1, 1, 1), probePC);
         updateVolumeDescriptorSets();
         vkQueueWaitIdle(graphicsQueue);
+        float* probeOut = volumeSimulator->getProbeOut();
+        char cpuText[32];
+        snprintf(cpuText, sizeof(cpuText), "CPU Temperature: %0.2f°C", probeOut[0]);
+        textObjects[14].text = cpuText;
+        if(gpuEnabled) {
+            char gpuText[32];
+            snprintf(gpuText, sizeof(gpuText), "GPU Temperature: %0.2f°C", probeOut[1]);
+            textObjects[15].text = gpuText;
+        } else textObjects[15].enabled = false;
         std::vector<VkSemaphore> waitSemaphores;
         std::vector<VkPipelineStageFlags> waitStages;
         waitSemaphores.push_back(imageAvailableSemaphores[currentFrame]);
@@ -2099,13 +2117,14 @@ private:
                 float y = textObject.position.y;
                 float scale = textObject.scale;
                 float startX = textObject.anchorLeft ? x : (swapChainExtent.width - x);
+                float startY = textObject.anchorTop ? y : (swapChainExtent.height - y);
                 float baselineBearing = 0.0f;
                 if(Characters.find('A') != Characters.end()) baselineBearing = Characters['A'].bearing.y * scale;
                 for(char c : textObject.text){
                     if(Characters.find(c) == Characters.end()) continue;
                     const Character &ch = Characters[c];
                     float xpos = startX + ch.bearing.x * scale;
-                    float ypos = y + baselineBearing - ch.bearing.y * scale;
+                    float ypos = startY + baselineBearing - ch.bearing.y * scale;
                     float w = ch.size.x * scale;
                     float h = ch.size.y * scale;
                     float ndcX1 = (2.0f * xpos / swapChainExtent.width) - 1.0f;
@@ -2149,8 +2168,8 @@ private:
             throw std::runtime_error("Failed to create text descriptor pool!");
     }
     void createComputeDescriptorSetLayout(){
-        std::vector<VkDescriptorSetLayoutBinding> bindings(16);
-        for(int i = 0; i < 16; i++){
+        std::vector<VkDescriptorSetLayoutBinding> bindings(17);
+        for(int i = 0; i < 17; i++){
             bindings[i].binding = i;
             bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             bindings[i].descriptorCount = 1;
@@ -2167,7 +2186,7 @@ private:
     void createComputeDescriptorPool(){
         VkDescriptorPoolSize poolSize{};
         poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSize.descriptorCount = 16;
+        poolSize.descriptorCount = 17;
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.poolSizeCount = 1;

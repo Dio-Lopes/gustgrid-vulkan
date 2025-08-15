@@ -149,6 +149,7 @@ private:
     VkBuffer d_tempSumDiss = VK_NULL_HANDLE;
     VkBuffer d_fanAccess = VK_NULL_HANDLE;
     VkBuffer d_solidGrid = VK_NULL_HANDLE;
+    VkBuffer d_probeOut = VK_NULL_HANDLE;
     VkImage d_temperatureImage = VK_NULL_HANDLE;
     VkImage d_volumeImage = VK_NULL_HANDLE;
     VkImageView d_temperatureImageView = VK_NULL_HANDLE;
@@ -248,7 +249,7 @@ public:
                 d_divergence, d_pressure, d_pressureOut, d_residual,
                 d_tempVelocity, d_velocity, d_speed, d_temperature, d_heatSources,
                 d_pressureTemp, d_tempTemperature, d_tempSum,
-                d_weightSum, d_tempSumDiss, d_fanAccess, d_solidGrid
+                d_weightSum, d_tempSumDiss, d_fanAccess, d_solidGrid, d_probeOut
             };
             for(auto buffer : buffers){
                 if(g_vulkanDeviceValid && buffer != VK_NULL_HANDLE) pool.deallocate(buffer);
@@ -284,6 +285,7 @@ public:
         d_tempSumDiss = pool.allocate(numCells * sizeof(float), usage, properties);
         d_fanAccess = pool.allocate(numCells * maxFans * sizeof(uint32_t), usage, properties);
         d_solidGrid = pool.allocate(numCells * sizeof(uint32_t), usage, properties);
+        d_probeOut = pool.allocate(sizeof(float) * 2, usage, properties);
         initializeBuffers(numCells);
         uint32_t gridX = gridSizeX;
         uint32_t gridY = gridSizeY;
@@ -308,6 +310,7 @@ public:
     VkBuffer getTempSumDiss() { return d_tempSumDiss; }
     VkBuffer getFanAccess() { return d_fanAccess; }
     VkBuffer getSolidGrid() { return d_solidGrid; }
+    VkBuffer getProbeOut() { return d_probeOut; }
     VkImage getTemperatureImage() { return d_temperatureImage; }
     VkImage getVolumeImage() { return d_volumeImage; }
     VkImageView getTemperatureImageView() { return d_temperatureImageView; }
@@ -499,7 +502,8 @@ void VolumeSimulator::updateDescriptorSetsWithBuffers(){
         simulationMemory->getTempSumDiss(),
         simulationMemory->getFanAccess(),
         simulationMemory->getSolidGrid(),
-        simulationMemory->getHeatSources()
+        simulationMemory->getHeatSources(),
+        simulationMemory->getProbeOut()
     };
     for(size_t i = 0; i < buffers.size(); i++)
         if(buffers[i] == VK_NULL_HANDLE)
@@ -573,6 +577,20 @@ void VolumeSimulator::addKernel(const std::string &name, const std::string &shad
     createKernelPipelineLayout(kernel);
     createKernelPipeline(kernel);
     kernels[name] = kernel;
+}
+float* VolumeSimulator::getProbeOut() const {
+    VkDeviceSize bufferSize = 2 * sizeof(float);
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingMemory;
+    simulationMemory->createStagingBuffer(bufferSize, stagingBuffer, stagingMemory);
+    simulationMemory->copyBuffer(simulationMemory->getProbeOut(), stagingBuffer, bufferSize);
+    void* data;
+    vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);
+    float* probeOut = static_cast<float*>(data);
+    vkUnmapMemory(device, stagingMemory);
+    vkDestroyBuffer(device, stagingBuffer, nullptr);
+    vkFreeMemory(device, stagingMemory, nullptr);
+    return probeOut;
 }
 void VolumeSimulator::updateVolumeImages(bool displayPressure){
     VkCommandBuffer commandBuffer = computeCommandBuffers[currentFrame];

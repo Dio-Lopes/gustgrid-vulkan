@@ -59,6 +59,7 @@ public:
     void setSolidGrid(const uint32_t* solidGrid, size_t numCells = gridSizeX * gridSizeY * gridSizeZ);
     void setHeatSources(const float* heatSources, size_t numCells = gridSizeX * gridSizeY * gridSizeZ);
     VkSemaphore dispatchKernel(const std::string &kernelName, glm::uvec3 gridSize, const ComputePushConstants &pushConstants = {});
+    float* getProbeOut() const;
     void updateVolumeImages(bool displayPressure);
     void initSimulation(int numCells);
     void updateDescriptorSetsWithBuffers();

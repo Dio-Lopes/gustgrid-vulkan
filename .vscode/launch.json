@@ -10,11 +10,7 @@
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "Configure and Build (Windows)",
             "console": "internalConsole",
-            "stopAtEntry": false,
-            "windows": {
-                "MIMode": "gdb",
-                "miDebuggerPath": "gdb"
-            }
+            "stopAtEntry": false
         },
         {
             "name": "macOS Release",
@@ -35,6 +31,28 @@
             "MIMode": "lldb",
             "osx": {
                 "MIMode": "lldb"
+            }
+        },
+        {
+            "name": "Linux Release",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/bin/GustGridVulkan",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Configure and Build (Linux)",
+            "stopAtEntry": false,
+            "environment": [
+                {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "${workspaceFolder}/bin/lib:/usr/lib:/usr/local/lib"
+                }
+            ],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "/usr/bin/gdb",
+            "linux": {
+                "MIMode": "gdb"
             }
         }
     ]

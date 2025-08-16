@@ -82,6 +82,43 @@
             }
         },
         {
+            "label": "CMake Configure (Linux)",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "-S",
+                "${workspaceFolder}",
+                "-B",
+                "${workspaceFolder}/build",
+                "-G",
+                "Ninja",
+                "-DCMAKE_CXX_STANDARD=20"
+            ],
+            "group": "build",
+            "problemMatcher": [],
+            "linux": {
+                "presentation": {
+                    "reveal": "always"
+                }
+            }
+        },
+        {
+            "label": "CMake Build (Linux)",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "--build",
+                "${workspaceFolder}/build"
+            ],
+            "group": "build",
+            "problemMatcher": [],
+            "linux": {
+                "presentation": {
+                    "reveal": "always"
+                }
+            }
+        },
+        {
             "label": "Configure and Build (Windows)",
             "dependsOrder": "sequence",
             "dependsOn": [
@@ -97,6 +134,16 @@
             "dependsOn": [
                 "CMake Configure (macOS)",
                 "CMake Build (macOS)"
+            ],
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Configure and Build (Linux)",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "CMake Configure (Linux)",
+                "CMake Build (Linux)"
             ],
             "group": "build",
             "problemMatcher": []

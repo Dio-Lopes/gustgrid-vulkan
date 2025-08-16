@@ -4,13 +4,19 @@ project(GustGridVulkan)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+set(IS_WINDOWS FALSE)
 set(IS_MACOS FALSE)
-if(APPLE)
+set(IS_LINUX FALSE)
+if(WIN32)
+    set(IS_WINDOWS TRUE)
+elseif(APPLE)
     set(IS_MACOS TRUE)
+else()
+    set(IS_LINUX TRUE)
 endif()
 
 set(VK_SDK_PATH $ENV{VK_SDK_PATH})
-if(NOT VK_SDK_PATH AND NOT IS_MACOS)
+if(IS_WINDOWS AND NOT VK_SDK_PATH)
     message(FATAL_ERROR "VK_SDK_PATH environment variable is not set. Please set it to the path of your Vulkan SDK.")
 endif()
 
@@ -24,13 +30,16 @@ if(IS_MACOS)
         include_directories(${VK_SDK_PATH}/Include)
         link_directories(${VK_SDK_PATH}/macOS/lib)
     endif()
-else()
+elseif(IS_WINDOWS)
     include_directories(${VK_SDK_PATH}/Include)
     link_directories(${VK_SDK_PATH}/Lib)
 endif()
 
 include_directories(${CMAKE_SOURCE_DIR}/include)
-link_directories(${CMAKE_SOURCE_DIR}/include)
+include_directories(${CMAKE_SOURCE_DIR}/include/glm)
+if(IS_WINDOWS)
+    link_directories(${CMAKE_SOURCE_DIR}/include)
+endif()
 
 set(SOURCES
     src/main.cpp
@@ -48,11 +57,19 @@ if(IS_MACOS)
         PATHS
             /Users/$ENV{USER}/VulkanSDK/*/macOS/bin
     )
-else()
+elseif(IS_WINDOWS)
     find_program(GLSLC_EXECUTABLE glslc
         HINTS
             ${VK_SDK_PATH}/Bin
+            $ENV{VULKAN_SDK}/Bin
+    )
+else() # Linux
+    find_program(GLSLC_EXECUTABLE glslc
+        HINTS
+            ${VK_SDK_PATH}/bin
             $ENV{VULKAN_SDK}/bin
+            /usr/bin
+            /usr/local/bin
     )
 endif()
 
@@ -110,7 +127,7 @@ if(IS_MACOS)
     target_compile_definitions(${PROJECT_NAME} PRIVATE
         VULKAN_HPP_NO_EXCEPTIONS
     )
-else()
+elseif(IS_WINDOWS)
     find_library(Vulkan_LIBRARY vulkan-1 ${VK_SDK_PATH}/Lib)
     find_package(Freetype REQUIRED)
 
@@ -120,6 +137,34 @@ else()
     )
     target_compile_definitions(${PROJECT_NAME} PRIVATE
         WIN32
+    )
+else() # Linux
+    find_package(PkgConfig QUIET)
+    find_package(Vulkan REQUIRED)
+    find_package(Freetype REQUIRED)
+    find_package(glfw3 3.3 QUIET)
+    if(NOT glfw3_FOUND)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(GLFW3 REQUIRED glfw3)
+            add_library(glfw INTERFACE)
+            target_include_directories(glfw INTERFACE ${GLFW3_INCLUDE_DIRS})
+            target_link_libraries(glfw INTERFACE ${GLFW3_LIBRARIES})
+        else()
+            message(FATAL_ERROR "glfw3 not found. Please install it, e.g., sudo apt install libglfw3-dev")
+        endif()
+    endif()
+
+    target_link_libraries(${PROJECT_NAME}
+        Vulkan::Vulkan
+    glfw
+        ${FREETYPE_LIBRARIES}
+    )
+    target_include_directories(${PROJECT_NAME} PRIVATE
+    ${FREETYPE_INCLUDE_DIRS}
+    $<IF:$<BOOL:${glfw3_FOUND}>,${glfw3_INCLUDE_DIRS},${GLFW3_INCLUDE_DIRS}>
+    )
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        VULKAN_HPP_NO_EXCEPTIONS
     )
 endif()
 
@@ -158,13 +203,28 @@ endif()
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR NOT CMAKE_BUILD_TYPE)
     message(STATUS "Building in Release mode")
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "GNU")
-        target_compile_options(${PROJECT_NAME} PRIVATE 
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(${PROJECT_NAME} PRIVATE
             -O3
             -DNDEBUG
             -funroll-loops
             -fvectorize
             -fslp-vectorize
+            -ffast-math
+            -march=native
+            -mtune=native
+            -flto
+            -fomit-frame-pointer
+            -finline-functions
+        )
+        set_target_properties(${PROJECT_NAME} PROPERTIES
+            INTERPROCEDURAL_OPTIMIZATION TRUE
+        )
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+        target_compile_options(${PROJECT_NAME} PRIVATE
+            -O3
+            -DNDEBUG
+            -funroll-loops
             -ffast-math
             -march=native
             -mtune=native

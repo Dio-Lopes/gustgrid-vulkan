@@ -33,6 +33,30 @@
             }
         },
         {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/include",
+                "${workspaceFolder}/include/**",
+                "${workspaceFolder}/include/glm",
+                "${workspaceFolder}/src",
+                "${workspaceFolder}/**",
+                "/usr/include",
+                "/usr/local/include",
+                "/usr/include/freetype2",
+                "${env:VK_SDK_PATH}/Include",
+                "${env:VULKAN_SDK}/include"
+            ],
+            "defines": [
+                "VULKAN_HPP_NO_EXCEPTIONS"
+            ],
+            "compilerPath": "/usr/bin/g++",
+            "cStandard": "c17",
+            "cppStandard": "c++20",
+            "intelliSenseMode": "linux-gcc-x64",
+            "configurationProvider": "ms-vscode.cmake-tools",
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json"
+        },
+        {
             "name": "macOS",
             "includePath": [
                 "${workspaceFolder}/include",

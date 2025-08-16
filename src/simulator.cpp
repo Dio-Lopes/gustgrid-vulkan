@@ -15,6 +15,7 @@
 #include <fstream>
 #include <algorithm>
 #include <array>
+#include <memory> 
 #include <simulator.h>
 #include <vulkan_utils.h>
 

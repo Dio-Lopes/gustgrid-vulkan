@@ -76,7 +76,7 @@ This project is currently in development.
 
 <b>Features:</b>
 <ul>
-<li><b>Voxel-based Fluid & Thermal Simulation:</b> Simulates a 64×256×128 voxel grid (volume pixels), with one CUDA thread per voxel for maximum parallelism.</li>
+<li><b>Voxel-based Fluid & Thermal Simulation:</b> Simulates a 64×256×128 voxel grid (volume pixels), with one GPU thread per voxel for maximum parallelism.</li>
 
 <li><b>All-in-one Physics:</b> Handles semi-Lagrangian advection, fan thrust, buoyancy, wall interactions, pressure projection, dissipation, convection, and conduction all on the GPU.</li>
 
@@ -84,7 +84,7 @@ This project is currently in development.
 
 <li><b>Advanced Heat Transfer:</b> Models convective (wind-chill style) and conductive (solid/fluid-specific diffusivity) heat exchange, alongside explicit heat sources and neighbor dissipation.</li>
 
-<li><b>Interactive OpenGL Renderer:</b> Real-time ray marching volume heatmaps, PBR shading for chassis components, and custom controls for dynamic scene adjustments.</li>
+<li><b>Interactive Vulkan Renderer:</b> Real-time ray marching volume heatmaps, PBR shading for chassis components, and custom controls for dynamic scene adjustments.</li>
 </ul>
 
 ### Built With
@@ -140,6 +140,16 @@ See the [open issues](https://github.com/josephHelfenbein/gustgrid-vulkan/issues
 
 ## Prerequisites
 
+For any platform, you need to first run after cloning the repository:
+```bash
+git submodule update --init --recursive
+```
+or, just clone the repository with the submodules:
+```bash
+git clone --recurse-submodules https://github.com/josephHelfenbein/gustgrid-vulkan.git
+```
+
+
 ### MacOS
 
 To compile the project on MacOS, you'll need:
@@ -155,6 +165,59 @@ export DYLD_LIBRARY_PATH="/usr/local/lib:/opt/homebrew/lib:$DYLD_LIBRARY_PATH"
 ```
 4. Download and install Vulkan SDK from https://vulkan.lunarg.com/sdk/home
 5. Run the `MacOS Release` configuration in VSCode.
+
+### Linux
+
+To compile the project on Linux, use your distro’s packages (glslc is provided by shaderc). The project requires: C++ toolchain, CMake, Ninja, Git, pkg-config, Vulkan headers/loader/tools, GLFW, FreeType, and OpenMP (via GCC/libgomp). GLM is vendored and not required from the system (installing it is fine but optional).
+
+1. Install packages
+   - Debian/Ubuntu:
+   ```bash
+   sudo apt update
+   sudo apt install -y \
+     build-essential cmake ninja-build git pkg-config \
+     libvulkan-dev vulkan-tools shaderc \
+     libglfw3-dev libfreetype6-dev
+   # Optional (not required since GLM is vendored): libglm-dev
+   ```
+   - Arch Linux:
+   ```bash
+   sudo pacman -Syu --needed \
+     base-devel cmake ninja git pkgconf \
+     vulkan-headers vulkan-tools vulkan-icd-loader vulkan-validation-layers \
+     shaderc glfw freetype2
+   # Optional: glm
+   ```
+   - Fedora:
+   ```bash
+   sudo dnf install -y \
+     gcc-c++ cmake ninja-build git pkgconf-pkg-config \
+     vulkan-headers vulkan-loader-devel vulkan-tools vulkan-validation-layers \
+     shaderc glfw-devel freetype-devel
+   # Optional: glm-devel
+   ```
+   - openSUSE:
+   ```bash
+   sudo zypper install -y \
+     gcc-c++ cmake ninja git pkg-config \
+     vulkan-headers libvulkan1 Vulkan-Tools vulkan-validationlayers \
+     shaderc glfw3-devel freetype2-devel
+   # Optional: glm-devel
+   ```
+   - RHEL:
+   ```bash
+   sudo dnf install -y epel-release
+   sudo dnf install -y \
+     gcc-c++ cmake ninja-build git pkgconf-pkg-config \
+     vulkan-headers vulkan-loader-devel vulkan-tools vulkan-validation-layers \
+     shaderc glfw-devel freetype-devel
+   # Optional: glm-devel
+   ```
+   Notes:
+   - glslc should be available at /usr/bin/glslc after installing shaderc.
+   - GCC provides OpenMP (libgomp) by default; if you switch to clang, also install libomp-devel (name varies by distro).
+
+2. Run the `Linux Release` configuration in VSCode.
 
 ### Windows
 

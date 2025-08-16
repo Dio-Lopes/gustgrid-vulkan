@@ -407,6 +407,9 @@ private:
     float pressureTolerance = 1e-4f;
     VolumeSimulator::ComputePushConstants currentPushConstants = {};
     float dt = 0.0f;
+    float uiScale = 1.0f;
+    float textScale = 1.0f;
+    float textSizeScale = 1.0f;
 
     std::map<char, Character> Characters;
     void prepareCharacters(){
@@ -447,6 +450,19 @@ private:
         glfwSetWindowUserPointer(window, this);
         glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
         glfwSetCursorPosCallback(window, mouseCallback);
+        float xscale = 1.0f, yscale = 1.0f;
+        glfwGetWindowContentScale(window, &xscale, &yscale);
+        float deviceScale = xscale;
+        #if defined(__APPLE__)
+            uiScale = 1.0f;
+            textScale = 1.0f;
+            textSizeScale = 1.0f;
+        #else
+            const float baseline = 2.0f;
+            uiScale = deviceScale > 0.0f ? (deviceScale / baseline) : 1.0f;
+            textScale = 1.0f;
+            textSizeScale = uiScale;
+        #endif
     }
     void initVulkan(){
         createInstance();
@@ -744,6 +760,7 @@ private:
             char gpuText[32];
             snprintf(gpuText, sizeof(gpuText), "GPU Temperature: %0.2f°C", probeOut[1]);
             textObjects[15].text = gpuText;
+            textObjects[15].enabled = true;
         } else textObjects[15].enabled = false;
         std::vector<VkSemaphore> waitSemaphores;
         std::vector<VkPipelineStageFlags> waitStages;
@@ -925,13 +942,10 @@ private:
         VkDescriptorPoolSize uboPoolSize{};
         uboPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         uboPoolSize.descriptorCount = MAX_FRAMES_IN_FLIGHT;
-        VkDescriptorPoolSize volumePoolSize{};
-        volumePoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        volumePoolSize.descriptorCount = MAX_FRAMES_IN_FLIGHT;
-        VkDescriptorPoolSize temperaturePoolSize{};
-        temperaturePoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        temperaturePoolSize.descriptorCount = MAX_FRAMES_IN_FLIGHT;
-        std::array<VkDescriptorPoolSize, 3> poolSizes = {uboPoolSize, volumePoolSize, temperaturePoolSize};
+        VkDescriptorPoolSize combinedSamplerPoolSize{};
+        combinedSamplerPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        combinedSamplerPoolSize.descriptorCount = MAX_FRAMES_IN_FLIGHT * 2;
+        std::array<VkDescriptorPoolSize, 2> poolSizes = {uboPoolSize, combinedSamplerPoolSize};
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
@@ -955,6 +969,14 @@ private:
             uboBufferInfo.buffer = volumeData.uniformBuffers[i];
             uboBufferInfo.offset = 0;
             uboBufferInfo.range = sizeof(VolumeUniformBufferObject);
+            VkDescriptorImageInfo volumeImageInfo{};
+            volumeImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            volumeImageInfo.imageView = volumeData.volumeImageView;
+            volumeImageInfo.sampler = volumeSampler;
+            VkDescriptorImageInfo temperatureImageInfo{};
+            temperatureImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            temperatureImageInfo.imageView = volumeData.temperatureImageView;
+            temperatureImageInfo.sampler = volumeSampler;
             std::array<VkWriteDescriptorSet, 3> descriptorWrites{};
             descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             descriptorWrites[0].dstSet = volumeData.descriptorSets[i];
@@ -963,6 +985,20 @@ private:
             descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             descriptorWrites[0].descriptorCount = 1;
             descriptorWrites[0].pBufferInfo = &uboBufferInfo;
+            descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[1].dstSet = volumeData.descriptorSets[i];
+            descriptorWrites[1].dstBinding = 1;
+            descriptorWrites[1].dstArrayElement = 0;
+            descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[1].descriptorCount = 1;
+            descriptorWrites[1].pImageInfo = &volumeImageInfo;
+            descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[2].dstSet = volumeData.descriptorSets[i];
+            descriptorWrites[2].dstBinding = 2;
+            descriptorWrites[2].dstArrayElement = 0;
+            descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[2].descriptorCount = 1;
+            descriptorWrites[2].pImageInfo = &temperatureImageInfo;
             vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
         }
     }
@@ -2034,10 +2070,10 @@ private:
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingBufferMemory, nullptr);
         for(auto &uiObject : uiObjects){
-            float xpos = uiObject.second.position.x;
-            float ypos = uiObject.second.position.y;
-            float w = uiObject.second.size.x;
-            float h = uiObject.second.size.y;
+            float xpos = uiObject.second.position.x * uiScale;
+            float ypos = uiObject.second.position.y * uiScale;
+            float w = uiObject.second.size.x * uiScale;
+            float h = uiObject.second.size.y * uiScale;
             float ndcX1 = (2.0f * xpos / swapChainExtent.width) - 1.0f;
             float ndcY1 = (2.0f * ypos / swapChainExtent.height) - 1.0f;
             float ndcX2 = (2.0f * (xpos + w) / swapChainExtent.width) - 1.0f;
@@ -2056,10 +2092,10 @@ private:
     }
     void updateUIVertexBuffer(){
         for(auto &uiObject : uiObjects){
-            float xpos = uiObject.second.position.x;
-            float ypos = uiObject.second.position.y;
-            float w = uiObject.second.size.x;
-            float h = uiObject.second.size.y;
+            float xpos = uiObject.second.position.x * uiScale;
+            float ypos = uiObject.second.position.y * uiScale;
+            float w = uiObject.second.size.x * uiScale;
+            float h = uiObject.second.size.y * uiScale;
             float finalX = uiObject.second.anchorLeft ? xpos : (swapChainExtent.width - xpos - w);
             float ndcX1 = (2.0f * finalX / swapChainExtent.width) - 1.0f;
             float ndcY1 = (2.0f * ypos / swapChainExtent.height) - 1.0f;
@@ -2108,9 +2144,9 @@ private:
         for(const auto &textObject : textObjects){
             if(!textObject.enabled) continue;
             if(!textObject.text.empty()){
-                float x = textObject.position.x;
-                float y = textObject.position.y;
-                float scale = textObject.scale;
+                float x = textObject.position.x * uiScale;
+                float y = textObject.position.y * uiScale;
+                float scale = textObject.scale * (textScale * textSizeScale);
                 float startX = textObject.anchorLeft ? x : (swapChainExtent.width - x);
                 float startY = textObject.anchorTop ? y : (swapChainExtent.height - y);
                 float baselineBearing = 0.0f;

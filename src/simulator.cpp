@@ -539,6 +539,11 @@ void VolumeSimulator::copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer 
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    VkMemoryBarrier postCopy{};
+    postCopy.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    postCopy.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    postCopy.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &postCopy, 0, nullptr, 0, nullptr);
 }
 void VolumeSimulator::addKernel(const std::string &name, const std::string &shaderPath, glm::uvec3 workgroupSize, bool needsBarrier){
     ComputeKernel kernel;
@@ -637,6 +642,7 @@ VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::
         vkCmdPushConstants(commandBuffer, kernel.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &pushConstants);
     glm::uvec3 numGroups = (gridSize + kernel.workgroupSize - 1u) / kernel.workgroupSize;
     vkCmdDispatch(commandBuffer, numGroups.x, numGroups.y, numGroups.z);
+    if(kernel.needsBarrier) addMemoryBarrier(commandBuffer);
     vkEndCommandBuffer(commandBuffer);
     VkFence timeoutFence;
     VkFenceCreateInfo fenceInfo{};

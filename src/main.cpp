@@ -283,9 +283,9 @@ private:
     VkImage colorImage;
     VkDeviceMemory colorImageMemory;
     VkImageView colorImageView;
-    VkBuffer textVertexBuffer;
-    VkDeviceMemory textVertexBufferMemory;
-    void* textVertexBufferMapped;
+    VkBuffer textVertexBuffer[MAX_FRAMES_IN_FLIGHT];
+    VkDeviceMemory textVertexBufferMemory[MAX_FRAMES_IN_FLIGHT];
+    void* textVertexBufferMapped[MAX_FRAMES_IN_FLIGHT];
     VkBuffer textIndexBuffer;
     VkDeviceMemory textIndexBufferMemory;
     VkBuffer uiIndexBuffer;
@@ -330,6 +330,7 @@ private:
     bool pressureEnabled = true;
     float backFanLocations[3] = {0.0f, -2.5f, 1.0f};
     bool showUI = true;
+    std::vector<std::string> pendingUiDescriptorUpdates;
     std::string hoverElement = "";
     std::map<std::string, ModelData> models = {
         {"case", {}},
@@ -549,9 +550,11 @@ private:
             volumeSimulator = nullptr;
         }
         cleanupSwapChain();
-        if(textVertexBuffer) vkUnmapMemory(device, textVertexBufferMemory);
-        vkDestroyBuffer(device, textVertexBuffer, nullptr);
-        vkFreeMemory(device, textVertexBufferMemory, nullptr);
+        for(size_t i=0; i<MAX_FRAMES_IN_FLIGHT; i++){
+            if(textVertexBuffer[i]) vkUnmapMemory(device, textVertexBufferMemory[i]);
+            vkDestroyBuffer(device, textVertexBuffer[i], nullptr);
+            vkFreeMemory(device, textVertexBufferMemory[i], nullptr);
+        }
         vkDestroyBuffer(device, textIndexBuffer, nullptr);
         vkFreeMemory(device, textIndexBufferMemory, nullptr);
         vkDestroyPipeline(device, textPipeline, nullptr);
@@ -665,6 +668,14 @@ private:
         if (glfwCreateWindowSurface(instance, window, nullptr, &surface) != VK_SUCCESS)
             throw std::runtime_error("Failed to create window surface!");
     }
+    void flushPendingUiDescriptorUpdates(){
+        if(pendingUiDescriptorUpdates.empty()) return;
+        vkDeviceWaitIdle(device);
+        for(const auto &name : pendingUiDescriptorUpdates){
+            updateUIDescriptorSet(name);
+        }
+        pendingUiDescriptorUpdates.clear();
+    }
     void drawFrame(){
         dt = glfwGetTime() - currentTime;
         currentTime = glfwGetTime();
@@ -702,7 +713,9 @@ private:
             return;
         } else if(result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
             throw std::runtime_error("Failed to acquire swap chain image!");
-        vkResetFences(device, 1, &inFlightFences[currentFrame]);
+    vkResetFences(device, 1, &inFlightFences[currentFrame]);
+    // Apply any UI descriptor updates at a safe point (no GPU work in flight)
+    flushPendingUiDescriptorUpdates();
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);
         recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
         updateUniformBuffer(currentFrame);
@@ -2034,8 +2047,10 @@ private:
         const size_t maxVertices = maxChars * 4;
         const size_t maxIndices = maxChars * 6;
         VkDeviceSize vertexBufferSize = sizeof(TextVertex) * maxVertices;
-        createBuffer(vertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, textVertexBuffer, textVertexBufferMemory);
-        vkMapMemory(device, textVertexBufferMemory, 0, vertexBufferSize, 0, &textVertexBufferMapped);
+        for(size_t i=0; i<MAX_FRAMES_IN_FLIGHT; i++){
+            createBuffer(vertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, textVertexBuffer[i], textVertexBufferMemory[i]);
+            vkMapMemory(device, textVertexBufferMemory[i], 0, vertexBufferSize, 0, &textVertexBufferMapped[i]);
+        }
         std::vector<uint32_t> indices;
         for(uint32_t i=0; i<maxChars; i++){
             uint32_t baseVertex = i * 4;
@@ -2174,7 +2189,7 @@ private:
             }
         }
         if(!vertices.empty() && vertices.size() * sizeof(TextVertex) <= 1000 * 4 * sizeof(TextVertex))
-            memcpy(textVertexBufferMapped, vertices.data(), vertices.size() * sizeof(TextVertex));
+            memcpy(textVertexBufferMapped[currentFrame], vertices.data(), vertices.size() * sizeof(TextVertex));
     }
     void createTextDescriptorPool(){
         VkDescriptorPoolSize poolSize{};
@@ -2284,6 +2299,7 @@ private:
     }
     void updateUIDescriptorSet(std::string name){
         try {
+            vkDeviceWaitIdle(device);
             if(uiObjects.find(name) == uiObjects.end()) {
                 std::cerr << "ERROR: UI object '" << name << "' not found!" << std::endl;
                 return;
@@ -2565,7 +2581,8 @@ private:
         updateTextVertexBuffer();
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipeline);
         VkDeviceSize offsets[] = {0};
-        vkCmdBindVertexBuffers(commandBuffer, 0, 1, &textVertexBuffer, offsets);
+        VkBuffer curTextVB = textVertexBuffer[currentFrame];
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, &curTextVB, offsets);
         vkCmdBindIndexBuffer(commandBuffer, textIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
         uint32_t indexOffset = 0;
         for(const auto &textObject : textObjects){
@@ -2933,7 +2950,8 @@ private:
                         app->models[modelName].enabled = *app->getHoverBoolean[hoverElement];
                     app->shouldUpdateGrid = true;
                 }
-                app->updateUIDescriptorSet(hoverElement);
+                if(std::find(app->pendingUiDescriptorUpdates.begin(), app->pendingUiDescriptorUpdates.end(), hoverElement) == app->pendingUiDescriptorUpdates.end())
+                    app->pendingUiDescriptorUpdates.push_back(hoverElement);
                 app->shouldUpdateFans = true;
             } else if(hoverElement == "fanUp"){
                 int currentFanCount = 0;
@@ -2955,7 +2973,8 @@ private:
             } else if(hoverElement == "uiToggle"){
                 app->showUI = !app->showUI;
                 app->uiObjects[hoverElement].name = app->showUI ? "toggle/close" : "toggle/open";
-                app->updateUIDescriptorSet(hoverElement);
+                if(std::find(app->pendingUiDescriptorUpdates.begin(), app->pendingUiDescriptorUpdates.end(), hoverElement) == app->pendingUiDescriptorUpdates.end())
+                    app->pendingUiDescriptorUpdates.push_back(hoverElement);
                 for(int i=4; i<14; i++) app->textObjects[i].enabled = app->showUI;
                 app->uiObjects["uiToggle"].position.x = app->showUI ? 470.0f : 25.0f;
                 app->uiObjects["gpuCheckbox"].enabled = app->showUI;

@@ -62,6 +62,12 @@ std::vector<const char*> deviceExtensions = {
     , "VK_KHR_portability_subset"
 #endif
 };
+#ifndef VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME
+#define VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME "VK_EXT_shader_atomic_float"
+#endif
+
+// Runtime toggle: default to CAS fallback on AMD, enable HW float atomics when safe
+static bool g_useCASAdvection = true;
 #ifdef NDEBUG
     const bool enableValidationLayers = false;
 #else
@@ -512,7 +518,10 @@ private:
         volumeSimulator->addKernel("computeResidual", "src/shaders/compiled/computeresidual.comp.spv", glm::uvec3(8, 8, 8), true);
         volumeSimulator->addKernel("subtractPressureGradient", "src/shaders/compiled/subtractpressuregradient.comp.spv", glm::uvec3(8, 8, 8), true);
         volumeSimulator->addKernel("enforceBoundaryConditions", "src/shaders/compiled/enforceboundaryconditions.comp.spv", glm::uvec3(8, 8, 8), true);
-        volumeSimulator->addKernel("computeAdvection", "src/shaders/compiled/computeadvection.comp.spv", glm::uvec3(8, 8, 8), true);
+        if(g_useCASAdvection)
+            volumeSimulator->addKernel("computeAdvection", "src/shaders/compiled/computeadvection_cas.comp.spv", glm::uvec3(8, 8, 8), true);
+        else
+            volumeSimulator->addKernel("computeAdvection", "src/shaders/compiled/computeadvection.comp.spv", glm::uvec3(8, 8, 8), true);
         volumeSimulator->addKernel("normalizeForward", "src/shaders/compiled/normalizeforward.comp.spv", glm::uvec3(8, 8, 8), true);
         volumeSimulator->addKernel("convectiveHeat", "src/shaders/compiled/convectiveheat.comp.spv", glm::uvec3(8, 8, 8), true);
         volumeSimulator->addKernel("diffuseKernel", "src/shaders/compiled/diffusekernel.comp.spv", glm::uvec3(8, 8, 8), true);
@@ -637,7 +646,7 @@ private:
         appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
         appInfo.pEngineName = "No Engine";
         appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.apiVersion = VK_API_VERSION_1_0;
+        appInfo.apiVersion = VK_API_VERSION_1_1;
 
         VkInstanceCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -713,9 +722,8 @@ private:
             return;
         } else if(result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
             throw std::runtime_error("Failed to acquire swap chain image!");
-    vkResetFences(device, 1, &inFlightFences[currentFrame]);
-    // Apply any UI descriptor updates at a safe point (no GPU work in flight)
-    flushPendingUiDescriptorUpdates();
+        vkResetFences(device, 1, &inFlightFences[currentFrame]);
+        flushPendingUiDescriptorUpdates();
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);
         recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
         updateUniformBuffer(currentFrame);
@@ -852,6 +860,15 @@ private:
             ||  vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS)
                 throw std::runtime_error("Failed to create sync objects!");
     }
+    bool hasDeviceExtension(VkPhysicalDevice dev, const char* extName){
+        uint32_t extensionCount = 0;
+        vkEnumerateDeviceExtensionProperties(dev, nullptr, &extensionCount, nullptr);
+        std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+        vkEnumerateDeviceExtensionProperties(dev, nullptr, &extensionCount, availableExtensions.data());
+        for(const auto& e : availableExtensions)
+            if(std::string(e.extensionName) == extName) return true;
+        return false;
+    }
     void createLogicalDevice(){
         QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
         std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
@@ -868,13 +885,42 @@ private:
         VkPhysicalDeviceFeatures deviceFeatures{};
         deviceFeatures.samplerAnisotropy = VK_TRUE;
         deviceFeatures.sampleRateShading = VK_TRUE;
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(physicalDevice, &props);
+        const bool isAMD = (props.vendorID == 0x1002);
+        bool enableAtomicFloatExt = false;
+        bool canUseBufferFloat32AtomicAdd = false;
+        VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloatFeatures{};
+        atomicFloatFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+        VkPhysicalDeviceFeatures2 features2{};
+        features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        features2.pNext = &atomicFloatFeatures;
+        vkGetPhysicalDeviceFeatures2(physicalDevice, &features2);
+        if(hasDeviceExtension(physicalDevice, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME)){
+            enableAtomicFloatExt = true;
+            canUseBufferFloat32AtomicAdd = atomicFloatFeatures.shaderBufferFloat32AtomicAdd == VK_TRUE;
+        }
+        g_useCASAdvection = !(enableAtomicFloatExt && canUseBufferFloat32AtomicAdd && !isAMD);
         VkDeviceCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         createInfo.pQueueCreateInfos = queueCreateInfos.data();
         createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
-        createInfo.pEnabledFeatures = &deviceFeatures;
-        createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
-        createInfo.ppEnabledExtensionNames = deviceExtensions.data();
+        VkPhysicalDeviceFeatures2 enabledFeatures2{};
+        enabledFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        enabledFeatures2.features = deviceFeatures;
+        VkPhysicalDeviceShaderAtomicFloatFeaturesEXT enabledAtomicFloat{};
+        if(!g_useCASAdvection && enableAtomicFloatExt && canUseBufferFloat32AtomicAdd){
+            enabledAtomicFloat.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+            enabledAtomicFloat.shaderBufferFloat32AtomicAdd = VK_TRUE;
+            enabledFeatures2.pNext = &enabledAtomicFloat;
+        }
+        createInfo.pNext = &enabledFeatures2;
+        createInfo.pEnabledFeatures = nullptr;
+        std::vector<const char*> enabledExts = deviceExtensions;
+        if(!g_useCASAdvection && enableAtomicFloatExt)
+            enabledExts.push_back(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
+        createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExts.size());
+        createInfo.ppEnabledExtensionNames = enabledExts.data();
         if(enableValidationLayers){
             createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
             createInfo.ppEnabledLayerNames = validationLayers.data();
@@ -1635,11 +1681,14 @@ private:
         samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
         if(vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS)
             throw std::runtime_error("Failed to create texture sampler!");
-        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-        samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
-        samplerInfo.maxLod = 1.0f;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        samplerInfo.minLod = 0.0f;
+        samplerInfo.maxLod = 0.0f;
         if(vkCreateSampler(device, &samplerInfo, nullptr, &volumeSampler) != VK_SUCCESS)
             throw std::runtime_error("Failed to create volume texture sampler!");
     }

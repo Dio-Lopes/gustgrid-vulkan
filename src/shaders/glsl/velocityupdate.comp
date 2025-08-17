@@ -16,9 +16,8 @@ layout(push_constant) uniform PushConstants {
     uint numFans;
     int displayPressure;
     uint padding;
-    vec4 fanPositions[8];
-    vec4 fanDirections[8];
 } pc;
+layout(binding = 17, std430) restrict readonly buffer FansBuffer { vec4 fans[]; };
 
 const float c_referenceDensity = 1.225;
 const float c_thermalExpansionCoefficient = 0.00343;
@@ -111,8 +110,8 @@ void main(){
     for(uint f=0; f<pc.numFans; f++){
         uint fanIdx = f * numCells + idx;
         if(fanAccess[fanIdx] == 0) continue;
-        vec3 fanPos = pc.fanPositions[f].xyz;
-        vec3 fanDir = pc.fanDirections[f].xyz;
+        vec3 fanPos = fans[f].xyz;
+        vec3 fanDir = fans[f + 8].xyz;
         vec3 toCell = vec3(worldX, worldY, worldZ) - fanPos;
         float distSq = dot(toCell, toCell);
         if(distSq < 1e-6) continue;

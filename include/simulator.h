@@ -47,8 +47,6 @@ public:
         alignas(4) uint32_t numFans;
         alignas(4) int displayPressure;
         alignas(4) uint32_t padding;
-        alignas(16) glm::vec4 fanPositions[maxFans];
-        alignas(16) glm::vec4 fanDirections[maxFans];
     };
     VolumeSimulator(VkDevice device, VkCommandPool commandPool, VkQueue computeQueue, VkPhysicalDevice physicalDevice);
     ~VolumeSimulator();
@@ -64,6 +62,7 @@ public:
     void updateVolumeImages(bool displayPressure);
     void initSimulation(int numCells);
     void updateDescriptorSetsWithBuffers();
+    void setFanParams(const glm::vec4* positions, const glm::vec4* directions, uint32_t count);
     void swapPressureBuffers();
     void copyFinalPressureToMain();
     float computeResidualSum();
@@ -79,4 +78,9 @@ private:
     VkCommandBuffer beginSingleTimeCommands();
     void endSingleTimeCommands(VkCommandBuffer commandBuffer);
     void copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage, uint32_t width, uint32_t height, uint32_t depth);
+public:
+    void clearTempSumsCPU(int numCells);
+    void clearPressureCPU(int numCells);
+    void copyVelocityTempCPU(int numCells);
+    void resetFanAccessCPU(int numCells);
 };

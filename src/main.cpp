@@ -515,11 +515,6 @@ private:
         volumeSimulator->addKernel("normalizeForward", "src/shaders/compiled/normalizeforward.comp.spv", glm::uvec3(8, 8, 8), true);
         volumeSimulator->addKernel("convectiveHeat", "src/shaders/compiled/convectiveheat.comp.spv", glm::uvec3(8, 8, 8), true);
         volumeSimulator->addKernel("diffuseKernel", "src/shaders/compiled/diffusekernel.comp.spv", glm::uvec3(8, 8, 8), true);
-        volumeSimulator->addKernel("clearBuffers", "src/shaders/compiled/clearbuffers.comp.spv", glm::uvec3(64, 1, 1), true);
-        volumeSimulator->addKernel("clearPressure", "src/shaders/compiled/clearpressure.comp.spv", glm::uvec3(64, 1, 1), true);
-        volumeSimulator->addKernel("clearPressureOut", "src/shaders/compiled/clearpressureout.comp.spv", glm::uvec3(64, 1, 1), true);
-        volumeSimulator->addKernel("copyVelocityTemp", "src/shaders/compiled/copyvelocitytemp.comp.spv", glm::uvec3(64, 1, 1), true);
-        volumeSimulator->addKernel("resetFanAccess", "src/shaders/compiled/resetfanaccess.comp.spv", glm::uvec3(64, 1, 1), true);
         volumeSimulator->addKernel("tempReader", "src/shaders/compiled/tempreader.comp.spv", glm::uvec3(2, 1, 1), true);
         currentPushConstants.gridSize = glm::vec4(gridSizeX, gridSizeY, gridSizeZ, 1.0f);
         currentPushConstants.worldMin = glm::vec4(worldMinX, worldMinY, worldMinZ, 1.0f);
@@ -681,9 +676,18 @@ private:
         textObjects[10].enabled = backFansEnabled > 0 && showUI;
         textObjects[11].enabled = backFansEnabled > 1 && showUI;
         textObjects[12].enabled = backFansEnabled > 2 && showUI;
-        uiObjects["sliderknob1"].position.x = 280.0f - (200.0f * (backFanLocations[0] / -5.0f));
-        uiObjects["sliderknob2"].position.x = 280.0f - (200.0f * (backFanLocations[1] / -5.0f));
-        uiObjects["sliderknob3"].position.x = 280.0f - (200.0f * (backFanLocations[2] / -5.0f));
+        auto placeKnob = [&](int idx, const char* sliderName, const char* knobName){
+            const auto &slider = uiObjects[sliderName];
+            float sx = slider.position.x;
+            float sw = slider.size.x;
+            float t = (backFanLocations[idx] / -5.0f);
+            float knobW = uiObjects["sliderknob1"].size.x;
+            float xLeft = slider.anchorLeft ? (sx + t * (sw - knobW)) : (sx + (1.0f - t) * (sw - knobW));
+            uiObjects[knobName].position.x = xLeft;
+        };
+        placeKnob(0, "slider1", "sliderknob1");
+        placeKnob(1, "slider2", "sliderknob2");
+        placeKnob(2, "slider3", "sliderknob3");
         uiObjects["sliderknob1"].enabled = backFansEnabled > 0 && showUI;
         uiObjects["sliderknob2"].enabled = backFansEnabled > 1 && showUI;
         uiObjects["sliderknob3"].enabled = backFansEnabled > 2 && showUI;
@@ -718,15 +722,15 @@ private:
         dummyConstants.numFans = 0;
         if(shouldUpdateFans){
             updateVolumeTextures();
-            VkSemaphore resetFanAccessSemaphore = volumeSimulator->dispatchKernel("resetFanAccess", glm::uvec3(fanElements, 1, 1), dummyConstants);
+            volumeSimulator->resetFanAccessCPU(totalCells);
             VkSemaphore computeSemaphore = volumeSimulator->dispatchKernel("fanUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
             shouldUpdateFans = false;
         }
-        VkSemaphore clearTempBuffers1 = volumeSimulator->dispatchKernel("clearBuffers", glm::uvec3(totalCells, 1, 1), dummyConstants);
+        volumeSimulator->clearTempSumsCPU(totalCells);
         VkSemaphore velocitySemaphore = volumeSimulator->dispatchKernel("velocityUpdate", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
-        VkSemaphore copyTempSemaphore = volumeSimulator->dispatchKernel("copyVelocityTemp", glm::uvec3(totalCells, 1, 1), dummyConstants);
+        volumeSimulator->copyVelocityTempCPU(totalCells);
         VkSemaphore divergenceSemaphore = volumeSimulator->dispatchKernel("computeDivergence", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
-        VkSemaphore clearPressureTemp = volumeSimulator->dispatchKernel("clearPressure", glm::uvec3(totalCells, 1, 1), dummyConstants);
+        volumeSimulator->clearPressureCPU(totalCells);
         for(int iter = 0; iter < maxPressureIterations; iter++){
             VkSemaphore jacobiSemaphore = volumeSimulator->dispatchKernel("pressureJacobi", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
             if(iter % 4 == 3 || iter == maxPressureIterations - 1){
@@ -1899,9 +1903,8 @@ private:
             index++;
         }
         currentPushConstants.numFans = index;
-        for(int i=0; i<currentPushConstants.numFans && i<maxFans; i++){
-            currentPushConstants.fanPositions[i] = fanLocations[i];
-            currentPushConstants.fanDirections[i] = fanDirections[i];
+        if(volumeSimulator){
+            volumeSimulator->setFanParams(fanLocations.data(), fanDirections.data(), static_cast<uint32_t>(index));
         }
     }
     void resetSolidGrid(){
@@ -2199,8 +2202,8 @@ private:
             throw std::runtime_error("Failed to create text descriptor pool!");
     }
     void createComputeDescriptorSetLayout(){
-        std::vector<VkDescriptorSetLayoutBinding> bindings(17);
-        for(int i = 0; i < 17; i++){
+        std::vector<VkDescriptorSetLayoutBinding> bindings(18);
+        for(int i = 0; i < 18; i++){
             bindings[i].binding = i;
             bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             bindings[i].descriptorCount = 1;
@@ -2217,7 +2220,7 @@ private:
     void createComputeDescriptorPool(){
         VkDescriptorPoolSize poolSize{};
         poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSize.descriptorCount = 17;
+        poolSize.descriptorCount = 18;
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.poolSizeCount = 1;
@@ -2869,19 +2872,27 @@ private:
         for(const auto &element : elements){
             if(uiObjects.find(element) == uiObjects.end()) continue;
             const auto &uiObj = uiObjects[element];
-            float actualX = uiObj.anchorLeft ? uiObj.position.x : (swapChainExtent.width - uiObj.position.x - uiObj.size.x);
-            float actualY = uiObj.position.y;
-            if(scaledMouseX >= actualX && scaledMouseX <= actualX + uiObj.size.x
-            && scaledMouseY >= actualY && scaledMouseY <= actualY + uiObj.size.y){
+            float xpos = uiObj.position.x * uiScale;
+            float ypos = uiObj.position.y * uiScale;
+            float w = uiObj.size.x * uiScale;
+            float h = uiObj.size.y * uiScale;
+            float actualX = uiObj.anchorLeft ? xpos : (swapChainExtent.width - xpos - w);
+            float actualY = ypos;
+            if(scaledMouseX >= actualX && scaledMouseX <= actualX + w
+            && scaledMouseY >= actualY && scaledMouseY <= actualY + h){
                 hoverElement = element;
                 return;
             }
         }
         const auto &uiWindow = uiObjects["uiWindow"];
-        float actualX = uiWindow.anchorLeft ? uiWindow.position.x : (swapChainExtent.width - uiWindow.position.x - uiWindow.size.x);
-        float actualY = uiWindow.position.y;
-        if(scaledMouseX >= actualX && scaledMouseX <= actualX + uiWindow.size.x
-        && scaledMouseY >= actualY && scaledMouseY <= actualY + uiWindow.size.y){
+        float xpos = uiWindow.position.x * uiScale;
+        float ypos = uiWindow.position.y * uiScale;
+        float w = uiWindow.size.x * uiScale;
+        float h = uiWindow.size.y * uiScale;
+        float actualX = uiWindow.anchorLeft ? xpos : (swapChainExtent.width - xpos - w);
+        float actualY = ypos;
+        if(scaledMouseX >= actualX && scaledMouseX <= actualX + w
+        && scaledMouseY >= actualY && scaledMouseY <= actualY + h){
             hoverElement = "uiWindow";
             return;
         }
@@ -2989,7 +3000,16 @@ private:
             if(app->hoverElement == "slider1" || app->hoverElement == "slider2" || app->hoverElement == "slider3"){
                 int i = app->hoverElement.back() - '1';
                 if(app->backFanLocations[i] > 0.0f) return;
-                app->backFanLocations[i] = -((scaledMouseX - (app->swapChainExtent.width - 310.0f)) / 230.0f) * 5.0f;
+                const auto &slider = app->uiObjects[app->hoverElement];
+                float sx = slider.position.x * app->uiScale;
+                float sy = slider.position.y * app->uiScale;
+                float sw = slider.size.x * app->uiScale;
+                float sh = slider.size.y * app->uiScale;
+                float sLeft = slider.anchorLeft ? sx : (app->swapChainExtent.width - sx - sw);
+                float t = (scaledMouseX - sLeft);
+                float knobW = app->uiObjects["sliderknob1"].size.x * app->uiScale;
+                t = std::clamp((t - knobW * 0.5f) / (sw - knobW), 0.0f, 1.0f);
+                app->backFanLocations[i] = -(t * 5.0f);
                 if(i<2 && app->backFanLocations[i+1] <= 0.0f && app->backFanLocations[i+1] - app->backFanLocations[i] >= -2.5f) app->backFanLocations[i] = app->backFanLocations[i+1] + 2.5f;
                 else if(i>0 && app->backFanLocations[i] - app->backFanLocations[i-1] >= -2.5f) app->backFanLocations[i] = app->backFanLocations[i-1] - 2.5f;
                 app->backFanLocations[i] = std::clamp(app->backFanLocations[i], -5.0f, 0.0f);

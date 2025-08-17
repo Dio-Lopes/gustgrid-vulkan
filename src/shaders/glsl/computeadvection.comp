@@ -19,8 +19,6 @@ layout(push_constant) uniform PushConstants {
     uint numFans;
     int displayPressure;
     uint padding;
-    vec4 fanPositions[8];
-    vec4 fanDirections[8];
 } pc;
 
 const float velocityThreshold = 0.1;

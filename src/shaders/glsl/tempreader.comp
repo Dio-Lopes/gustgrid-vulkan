@@ -14,8 +14,6 @@ layout(push_constant) uniform PushConstants {
     uint numFans;
     int displayPressure;
     uint padding;
-    vec4 fanPositions[8];
-    vec4 fanDirections[8];
 } pc;
 
 //  (-1.45f+2.0f)/(4.0f/gridSizeX)-0.5f, (2.45f+4.5f)/(9.0f/gridSizeY)-0.5f, (1.45f+4.0f)/(8.0f/gridSizeZ)-0.5f)

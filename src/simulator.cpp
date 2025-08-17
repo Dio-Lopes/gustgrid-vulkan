@@ -152,6 +152,7 @@ private:
     VkBuffer d_fanAccess = VK_NULL_HANDLE;
     VkBuffer d_solidGrid = VK_NULL_HANDLE;
     VkBuffer d_probeOut = VK_NULL_HANDLE;
+    VkBuffer d_fans = VK_NULL_HANDLE;
     VkImage d_temperatureImage = VK_NULL_HANDLE;
     VkImage d_volumeImage = VK_NULL_HANDLE;
     VkImageView d_temperatureImageView = VK_NULL_HANDLE;
@@ -251,7 +252,7 @@ public:
                 d_divergence, d_pressure, d_pressureOut, d_residual,
                 d_tempVelocity, d_velocity, d_speed, d_temperature, d_heatSources,
                 d_pressureTemp, d_tempTemperature, d_tempSum,
-                d_weightSum, d_tempSumDiss, d_fanAccess, d_solidGrid, d_probeOut
+                d_weightSum, d_tempSumDiss, d_fanAccess, d_solidGrid, d_probeOut, d_fans
             };
             for(auto buffer : buffers){
                 if(g_vulkanDeviceValid && buffer != VK_NULL_HANDLE) pool.deallocate(buffer);
@@ -262,7 +263,7 @@ public:
         d_divergence = d_pressure = d_pressureOut = d_residual =
         d_tempVelocity = d_velocity = d_speed = d_temperature =
         d_pressureTemp = d_tempTemperature = d_tempSum = d_heatSources =
-        d_weightSum = d_tempSumDiss = d_fanAccess = d_solidGrid = d_probeOut = VK_NULL_HANDLE;
+        d_weightSum = d_tempSumDiss = d_fanAccess = d_solidGrid = d_probeOut = d_fans = VK_NULL_HANDLE;
         allocatedGridSize = 0;
     }
     void ensureAllocated(int numCells){
@@ -288,6 +289,7 @@ public:
         d_fanAccess = pool.allocate(numCells * maxFans * sizeof(uint32_t), usage, properties);
         d_solidGrid = pool.allocate(numCells * sizeof(uint32_t), usage, properties);
         d_probeOut = pool.allocate(sizeof(float) * 2, usage, properties);
+        d_fans = pool.allocate(maxFans * 4 * sizeof(float) * 2, usage, properties);
         initializeBuffers(numCells);
         uint32_t gridX = gridSizeX;
         uint32_t gridY = gridSizeY;
@@ -313,6 +315,7 @@ public:
     VkBuffer getFanAccess() { return d_fanAccess; }
     VkBuffer getSolidGrid() { return d_solidGrid; }
     VkBuffer getProbeOut() { return d_probeOut; }
+    VkBuffer getFans() { return d_fans; }
     VkImage getTemperatureImage() { return d_temperatureImage; }
     VkImage getVolumeImage() { return d_volumeImage; }
     VkImageView getTemperatureImageView() { return d_temperatureImageView; }
@@ -366,59 +369,26 @@ public:
     }
 private:
     void initializeBuffers(int numCells){
-        size_t bufferSize = numCells * sizeof(float);
-        std::vector<float> initialData(numCells, 0.0f);
-        VkBuffer stagingBuffer;
-        VkDeviceMemory stagingMemory;
-        createStagingBuffer(bufferSize, stagingBuffer, stagingMemory);
-        void* data;
-        vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);
-        std::memcpy(data, initialData.data(), bufferSize);
-        vkUnmapMemory(device, stagingMemory);
-        std::vector<VkBuffer> floatBuffers = {
+        VkDeviceSize fSize = static_cast<VkDeviceSize>(numCells * sizeof(float));
+        VkDeviceSize v4Size = static_cast<VkDeviceSize>(numCells * 4 * sizeof(float));
+        VkDeviceSize u32Size = static_cast<VkDeviceSize>(numCells * sizeof(uint32_t));
+        VkDeviceSize fanAccessSize = static_cast<VkDeviceSize>(numCells * maxFans * sizeof(uint32_t));
+        VkDeviceSize fansSize = static_cast<VkDeviceSize>(maxFans * 4 * sizeof(float) * 2);
+        VkCommandBuffer cmd = VulkanCommandUtils::beginSingleTimeCommands(device, commandPool);
+        std::vector<VkBuffer> floatZero = {
             d_divergence, d_pressure, d_pressureOut, d_residual, d_heatSources,
             d_speed, d_pressureTemp, d_tempSum, d_weightSum, d_tempSumDiss
         };
-        for(auto &buffer : floatBuffers) copyBuffer(stagingBuffer, buffer, bufferSize);
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingMemory, nullptr);
-        std::vector<float> initialTemperatureData(numCells, 22.0f);
-        createStagingBuffer(bufferSize, stagingBuffer, stagingMemory);
-        vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);
-        std::memcpy(data, initialTemperatureData.data(), bufferSize);
-        vkUnmapMemory(device, stagingMemory);
-        copyBuffer(stagingBuffer, d_temperature, bufferSize);
-        copyBuffer(stagingBuffer, d_tempTemperature, bufferSize);
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingMemory, nullptr);
-        size_t velocityBufferSize = numCells * 4 * sizeof(float);
-        std::vector<float> initialVelocityData(numCells * 4, 0.0f);
-        createStagingBuffer(velocityBufferSize, stagingBuffer, stagingMemory);
-        vkMapMemory(device, stagingMemory, 0, velocityBufferSize, 0, &data);
-        std::memcpy(data, initialVelocityData.data(), velocityBufferSize);
-        vkUnmapMemory(device, stagingMemory);
-        copyBuffer(stagingBuffer, d_tempVelocity, velocityBufferSize);
-        copyBuffer(stagingBuffer, d_velocity, velocityBufferSize);
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingMemory, nullptr);
-        size_t fanAccessBufferSize = numCells * maxFans * sizeof(uint32_t);
-        size_t solidGridBufferSize = numCells * sizeof(uint32_t);
-        std::vector<uint32_t> initialFanAccessData(numCells * maxFans, 0);
-        std::vector<uint32_t> initialSolidGridData(numCells, 0);
-        createStagingBuffer(fanAccessBufferSize, stagingBuffer, stagingMemory);
-        vkMapMemory(device, stagingMemory, 0, fanAccessBufferSize, 0 , &data);
-        std::memcpy(data, initialFanAccessData.data(), fanAccessBufferSize);
-        vkUnmapMemory(device, stagingMemory);
-        copyBuffer(stagingBuffer, d_fanAccess, fanAccessBufferSize);
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingMemory, nullptr);
-        createStagingBuffer(solidGridBufferSize, stagingBuffer, stagingMemory);
-        vkMapMemory(device, stagingMemory, 0, solidGridBufferSize, 0, &data);
-        std::memcpy(data, initialSolidGridData.data(), solidGridBufferSize);
-        vkUnmapMemory(device, stagingMemory);
-        copyBuffer(stagingBuffer, d_solidGrid, solidGridBufferSize);
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingMemory, nullptr);
+        for(auto &buf : floatZero) vkCmdFillBuffer(cmd, buf, 0, fSize, 0u);
+        const float tempInit = 22.0f; uint32_t tempPattern; std::memcpy(&tempPattern, &tempInit, sizeof(uint32_t));
+        vkCmdFillBuffer(cmd, d_temperature, 0, fSize, tempPattern);
+        vkCmdFillBuffer(cmd, d_tempTemperature, 0, fSize, tempPattern);
+        vkCmdFillBuffer(cmd, d_tempVelocity, 0, v4Size, 0u);
+        vkCmdFillBuffer(cmd, d_velocity, 0, v4Size, 0u);
+        vkCmdFillBuffer(cmd, d_fanAccess, 0, fanAccessSize, 0u);
+        vkCmdFillBuffer(cmd, d_solidGrid, 0, u32Size, 0u);
+        vkCmdFillBuffer(cmd, d_fans, 0, fansSize, 0u);
+        VulkanCommandUtils::endSingleTimeCommands(device, commandPool, computeQueue, cmd);
     }
     VkCommandPool getCommandPool() const { return commandPool; }
     VkQueue getComputeQueue() const { return computeQueue; }
@@ -505,7 +475,8 @@ void VolumeSimulator::updateDescriptorSetsWithBuffers(){
         simulationMemory->getFanAccess(),
         simulationMemory->getSolidGrid(),
         simulationMemory->getHeatSources(),
-        simulationMemory->getProbeOut()
+        simulationMemory->getProbeOut(),
+        simulationMemory->getFans()
     };
     for(size_t i = 0; i < buffers.size(); i++)
         if(buffers[i] == VK_NULL_HANDLE)
@@ -825,4 +796,54 @@ std::vector<char> VolumeSimulator::readFile(const std::string& filename){
     file.read(buffer.data(), fileSize);
     file.close();
     return buffer;
+}
+void VolumeSimulator::setFanParams(const glm::vec4* positions, const glm::vec4* directions, uint32_t count){
+    if(count > maxFans) count = maxFans;
+    std::array<glm::vec4, maxFans * 2> cpu{};
+    for(uint32_t i = 0; i < count; ++i){
+        cpu[i] = positions[i];
+        cpu[i + maxFans] = directions[i];
+    }
+    VkBuffer stagingBuffer; VkDeviceMemory stagingMemory; VkDeviceSize size = static_cast<VkDeviceSize>(cpu.size() * sizeof(glm::vec4));
+    simulationMemory->createStagingBuffer(size, stagingBuffer, stagingMemory);
+    void* data = nullptr; vkMapMemory(device, stagingMemory, 0, size, 0, &data);
+    std::memcpy(data, cpu.data(), static_cast<size_t>(size));
+    vkUnmapMemory(device, stagingMemory);
+    simulationMemory->copyBuffer(stagingBuffer, simulationMemory->getFans(), size);
+    vkDestroyBuffer(device, stagingBuffer, nullptr);
+    vkFreeMemory(device, stagingMemory, nullptr);
+}
+
+void VolumeSimulator::clearTempSumsCPU(int numCells){
+    VkDeviceSize size = static_cast<VkDeviceSize>(numCells * sizeof(float));
+    VkCommandBuffer cmd = beginSingleTimeCommands();
+    vkCmdFillBuffer(cmd, simulationMemory->getTempSum(), 0, size, 0u);
+    vkCmdFillBuffer(cmd, simulationMemory->getWeightSum(), 0, size, 0u);
+    vkCmdFillBuffer(cmd, simulationMemory->getTempSumDiss(), 0, size, 0u);
+    endSingleTimeCommands(cmd);
+}
+
+void VolumeSimulator::clearPressureCPU(int numCells){
+    VkDeviceSize size = static_cast<VkDeviceSize>(numCells * sizeof(float));
+    VkCommandBuffer cmd = beginSingleTimeCommands();
+    vkCmdFillBuffer(cmd, simulationMemory->getPressureTemp(), 0, size, 0u);
+    vkCmdFillBuffer(cmd, simulationMemory->getPressureOut(), 0, size, 0u);
+    endSingleTimeCommands(cmd);
+}
+
+void VolumeSimulator::copyVelocityTempCPU(int numCells){
+    VkDeviceSize vec4Size = static_cast<VkDeviceSize>(numCells * 4 * sizeof(float));
+    VkCommandBuffer cmd = beginSingleTimeCommands();
+    VkBufferCopy copyRegion{}; copyRegion.srcOffset = 0; copyRegion.dstOffset = 0; copyRegion.size = vec4Size;
+    vkCmdCopyBuffer(cmd, simulationMemory->getTempVelocity(), simulationMemory->getVelocity(), 1, &copyRegion);
+    vkCmdFillBuffer(cmd, simulationMemory->getTempVelocity(), 0, vec4Size, 0u);
+    endSingleTimeCommands(cmd);
+}
+
+void VolumeSimulator::resetFanAccessCPU(int numCells){
+    int total = numCells * maxFans;
+    VkDeviceSize size = static_cast<VkDeviceSize>(total * sizeof(uint32_t));
+    VkCommandBuffer cmd = beginSingleTimeCommands();
+    vkCmdFillBuffer(cmd, simulationMemory->getFanAccess(), 0, size, 1u);
+    endSingleTimeCommands(cmd);
 }

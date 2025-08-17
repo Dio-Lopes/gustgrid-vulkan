@@ -13,9 +13,8 @@ layout(push_constant) uniform PushConstants {
     uint numFans;
     int displayPressure;
     uint padding;
-    vec4 fanPositions[8];
-    vec4 fanDirections[8];
 } pc;
+layout(binding = 17, std430) restrict readonly buffer FansBuffer { vec4 fans[]; };
 
 uint idx3D(uint x, uint y, uint z){
     return uint(x + y * pc.gridSize.x + z * pc.gridSize.x * pc.gridSize.y);
@@ -39,7 +38,7 @@ void main(){
                           (gid.z + 0.5) * pc.cellSize.z + pc.worldMin.z);
     for(int f = 0; f < pc.numFans; f++){
         uint fanIdx = f * numCells + idx;
-        vec3 fanPos = pc.fanPositions[f].xyz;
+    vec3 fanPos = fans[f].xyz;
         vec3 rayDir = targetPos - fanPos;
         float rayLength = length(rayDir);
         if(rayLength < max(pc.cellSize.x, max(pc.cellSize.y, pc.cellSize.z))){

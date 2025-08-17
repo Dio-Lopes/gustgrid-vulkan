@@ -66,7 +66,7 @@ std::vector<const char*> deviceExtensions = {
 #define VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME "VK_EXT_shader_atomic_float"
 #endif
 
-// Runtime toggle: default to CAS fallback on AMD, enable HW float atomics when safe
+// Runtime toggle: use CAS fallback when float atomicAdd isn’t available via VK_EXT_shader_atomic_float
 static bool g_useCASAdvection = true;
 #ifdef NDEBUG
     const bool enableValidationLayers = false;
@@ -885,9 +885,6 @@ private:
         VkPhysicalDeviceFeatures deviceFeatures{};
         deviceFeatures.samplerAnisotropy = VK_TRUE;
         deviceFeatures.sampleRateShading = VK_TRUE;
-        VkPhysicalDeviceProperties props{};
-        vkGetPhysicalDeviceProperties(physicalDevice, &props);
-        const bool isAMD = (props.vendorID == 0x1002);
         bool enableAtomicFloatExt = false;
         bool canUseBufferFloat32AtomicAdd = false;
         VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloatFeatures{};
@@ -900,7 +897,7 @@ private:
             enableAtomicFloatExt = true;
             canUseBufferFloat32AtomicAdd = atomicFloatFeatures.shaderBufferFloat32AtomicAdd == VK_TRUE;
         }
-        g_useCASAdvection = !(enableAtomicFloatExt && canUseBufferFloat32AtomicAdd && !isAMD);
+        g_useCASAdvection = !(enableAtomicFloatExt && canUseBufferFloat32AtomicAdd);
         VkDeviceCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         createInfo.pQueueCreateInfos = queueCreateInfos.data();

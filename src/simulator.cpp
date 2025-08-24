@@ -331,9 +331,6 @@ public:
     void swapPressureBuffers() {
         std::swap(d_pressure, d_pressureOut);
     }
-    void swapIterationBuffers(){
-        std::swap(d_pressureTemp, d_pressureOut);
-    }
     static SimulationMemory &getInstance(VkDevice device = VK_NULL_HANDLE, VkPhysicalDevice physicalDevice = VK_NULL_HANDLE, VkCommandPool commandPool = VK_NULL_HANDLE, VkQueue computeQueue = VK_NULL_HANDLE){
         static std::unique_ptr<SimulationMemory> instance;
         if(!instance && device != VK_NULL_HANDLE)
@@ -697,38 +694,12 @@ VkSemaphore VolumeSimulator::dispatchKernel(const std::string &kernelName, glm::
     vkDestroyFence(device, timeoutFence, nullptr);
     return computeFinishedSemaphores[currentFrame];
 }
-void VolumeSimulator::swapPressureBuffers(){
-    if(g_vulkanDeviceValid && computeQueue != VK_NULL_HANDLE) vkQueueWaitIdle(computeQueue);
-    simulationMemory->swapIterationBuffers();
-    if(g_vulkanDeviceValid && computeQueue != VK_NULL_HANDLE) vkQueueWaitIdle(computeQueue);
-    updateDescriptorSetsWithBuffers();
-    if(g_vulkanDeviceValid && computeQueue != VK_NULL_HANDLE) vkQueueWaitIdle(computeQueue);
-}
 void VolumeSimulator::copyFinalPressureToMain(){
     uint32_t totalCells = gridSizeX * gridSizeY * gridSizeZ;
     VkDeviceSize size = totalCells * sizeof(float);
     VkBuffer srcBuffer = simulationMemory->getPressureTemp(); 
     VkBuffer dstBuffer = simulationMemory->getPressure();
     VulkanCommandUtils::copyBuffer(device, commandPool, computeQueue, srcBuffer, dstBuffer, size);
-}
-float VolumeSimulator::computeResidualSum(){
-    int numCells = gridSizeX * gridSizeY * gridSizeZ;
-    VkDeviceSize bufferSize = numCells * sizeof(float);
-    VkBuffer stagingBuffer;
-    VkDeviceMemory stagingMemory;
-    simulationMemory->createStagingBuffer(bufferSize, stagingBuffer, stagingMemory);
-    simulationMemory->copyBuffer(simulationMemory->getResidual(), stagingBuffer, bufferSize);
-    void* data;
-    vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);   
-    float* residuals = static_cast<float*>(data);
-    float sum = 0.0f;
-    for(int i = 0; i < numCells; i++) {
-        sum += residuals[i];
-    }
-    vkUnmapMemory(device, stagingMemory);
-    vkDestroyBuffer(device, stagingBuffer, nullptr);
-    vkFreeMemory(device, stagingMemory, nullptr);
-    return sum;
 }
 void VolumeSimulator::cleanup(){
     for(auto &[name, kernel] : kernels){
@@ -874,4 +845,106 @@ void VolumeSimulator::resetFanAccessCPU(int numCells){
     VkCommandBuffer cmd = beginSingleTimeCommands();
     vkCmdFillBuffer(cmd, simulationMemory->getFanAccess(), 0, size, 1u);
     endSingleTimeCommands(cmd);
+}
+
+void VolumeSimulator::dispatchJacobiIterations(uint32_t iterations, glm::uvec3 gridSize, const ComputePushConstants &pushConstants, bool finalResidualPass){
+    if(kernels.find("pressureJacobi") == kernels.end() || kernels.find("pressureJacobiSwap") == kernels.end())
+        throw std::runtime_error("Jacobi kernels not registered");
+    const ComputeKernel &j1 = kernels["pressureJacobi"]; 
+    const ComputeKernel &j2 = kernels["pressureJacobiSwap"]; 
+    ComputeKernel residual{}; bool doResidual = false;
+    auto itR = kernels.find("computeResidual");
+    if(itR != kernels.end()){ residual = itR->second; doResidual = finalResidualPass; }
+    VkCommandBuffer commandBuffer = computeCommandBuffers[currentFrame];
+    vkResetCommandBuffer(commandBuffer, 0);
+    VkCommandBufferBeginInfo beginInfo{}; beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO; beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if(vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) throw std::runtime_error("Failed to begin Jacobi command buffer");
+    glm::uvec3 groups = (gridSize + j1.workgroupSize - 1u) / j1.workgroupSize;
+    for(uint32_t i = 0; i < iterations; ++i){
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, j1.pipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, j1.pipelineLayout, 0, 1, descriptorSets.data(), 0, nullptr);
+        vkCmdPushConstants(commandBuffer, j1.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &pushConstants);
+        vkCmdDispatch(commandBuffer, groups.x, groups.y, groups.z);
+        if(j1.needsBarrier) addMemoryBarrier(commandBuffer);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, j2.pipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, j2.pipelineLayout, 0, 1, descriptorSets.data(), 0, nullptr);
+        vkCmdPushConstants(commandBuffer, j2.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &pushConstants);
+        vkCmdDispatch(commandBuffer, groups.x, groups.y, groups.z);
+        if(j2.needsBarrier) addMemoryBarrier(commandBuffer);
+    }
+    if(doResidual){
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, residual.pipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, residual.pipelineLayout, 0, 1, descriptorSets.data(), 0, nullptr);
+        vkCmdPushConstants(commandBuffer, residual.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &pushConstants);
+        glm::uvec3 groupsRes = (gridSize + residual.workgroupSize - 1u) / residual.workgroupSize;
+        vkCmdDispatch(commandBuffer, groupsRes.x, groupsRes.y, groupsRes.z);
+        if(residual.needsBarrier) addMemoryBarrier(commandBuffer);
+    }
+    vkEndCommandBuffer(commandBuffer);
+    VkFence timeoutFence; VkFenceCreateInfo fenceInfo{}; fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    if(vkCreateFence(device, &fenceInfo, nullptr, &timeoutFence) != VK_SUCCESS) throw std::runtime_error("Failed to create timeout fence");
+    VkSubmitInfo submitInfo{}; submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO; submitInfo.commandBufferCount = 1; submitInfo.pCommandBuffers = &commandBuffer; submitInfo.signalSemaphoreCount = 1; submitInfo.pSignalSemaphores = &computeFinishedSemaphores[currentFrame];
+    if(vkQueueSubmit(computeQueue, 1, &submitInfo, timeoutFence) != VK_SUCCESS){ vkDestroyFence(device, timeoutFence, nullptr); throw std::runtime_error("Failed to submit Jacobi command buffer"); }
+    const uint64_t TIMEOUT_NANOSECONDS = 5000000000ULL;
+    VkResult result = vkWaitForFences(device, 1, &timeoutFence, VK_TRUE, TIMEOUT_NANOSECONDS);
+    if(result == VK_TIMEOUT){
+        std::cerr << "WARNING: Jacobi batch timed out after 5 seconds!" << std::endl;
+        vkDestroyFence(device, timeoutFence, nullptr);
+        vkResetCommandPool(device, commandPool, 0);
+        throw std::runtime_error("Jacobi batch timed out");
+    } else if(result != VK_SUCCESS){
+        vkDestroyFence(device, timeoutFence, nullptr);
+        throw std::runtime_error("Failed to wait for Jacobi batch: " + std::to_string(result));
+    }
+    vkDestroyFence(device, timeoutFence, nullptr);
+}
+
+float VolumeSimulator::computeResidualSumGPU(uint32_t numCells){
+    if(kernels.find("reduceResidualSum") == kernels.end() || kernels.find("reduceResidualSum2") == kernels.end())
+        throw std::runtime_error("Residual reduction kernels not registered");
+    const ComputeKernel &k1 = kernels["reduceResidualSum"];
+    const ComputeKernel &k2 = kernels["reduceResidualSum2"];
+    VkCommandBuffer commandBuffer = computeCommandBuffers[currentFrame];
+    vkResetCommandBuffer(commandBuffer, 0);
+    VkCommandBufferBeginInfo beginInfo{}; beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO; beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if(vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) throw std::runtime_error("Failed to begin residual reduction command buffer");
+    ComputePushConstants pc = {};
+    pc.gridSize = glm::vec4(gridSizeX, gridSizeY, gridSizeZ, 1.0f);
+    pc.relaxation = 0.0f;
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, k1.pipeline);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, k1.pipelineLayout, 0, 1, descriptorSets.data(), 0, nullptr);
+    vkCmdPushConstants(commandBuffer, k1.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &pc);
+    uint32_t groups = (numCells + 255u) / 256u;
+    vkCmdDispatch(commandBuffer, groups, 1, 1);
+    addMemoryBarrier(commandBuffer);
+    uint32_t current = groups;
+    while(current > 1u){
+        uint32_t next = (current + 255u) / 256u;
+        pc.relaxation = static_cast<float>(current);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, k2.pipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, k2.pipelineLayout, 0, 1, descriptorSets.data(), 0, nullptr);
+        vkCmdPushConstants(commandBuffer, k2.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &pc);
+        vkCmdDispatch(commandBuffer, next, 1, 1);
+        addMemoryBarrier(commandBuffer);
+        current = next;
+    }
+    vkEndCommandBuffer(commandBuffer);
+    VkFence timeoutFence; VkFenceCreateInfo fenceInfo{}; fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    if(vkCreateFence(device, &fenceInfo, nullptr, &timeoutFence) != VK_SUCCESS) throw std::runtime_error("Failed to create timeout fence");
+    VkSubmitInfo submitInfo{}; submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO; submitInfo.commandBufferCount = 1; submitInfo.pCommandBuffers = &commandBuffer; submitInfo.signalSemaphoreCount = 1; submitInfo.pSignalSemaphores = &computeFinishedSemaphores[currentFrame];
+    if(vkQueueSubmit(computeQueue, 1, &submitInfo, timeoutFence) != VK_SUCCESS){ vkDestroyFence(device, timeoutFence, nullptr); throw std::runtime_error("Failed to submit residual reduction command buffer"); }
+    const uint64_t TIMEOUT_NANOSECONDS = 5000000000ULL;
+    VkResult result = vkWaitForFences(device, 1, &timeoutFence, VK_TRUE, TIMEOUT_NANOSECONDS);
+    if(result != VK_SUCCESS){ vkDestroyFence(device, timeoutFence, nullptr); throw std::runtime_error("Residual reduction wait failed"); }
+    vkDestroyFence(device, timeoutFence, nullptr);
+    VkDeviceSize bufferSize = sizeof(float);
+    VkBuffer stagingBuffer; VkDeviceMemory stagingMemory;
+    simulationMemory->createStagingBuffer(bufferSize, stagingBuffer, stagingMemory);
+    simulationMemory->copyBuffer(simulationMemory->getResidual(), stagingBuffer, bufferSize);
+    void* data = nullptr; vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);
+    float out = 0.0f; std::memcpy(&out, data, sizeof(float));
+    vkUnmapMemory(device, stagingMemory);
+    vkDestroyBuffer(device, stagingBuffer, nullptr);
+    vkFreeMemory(device, stagingMemory, nullptr);
+    return out;
 }

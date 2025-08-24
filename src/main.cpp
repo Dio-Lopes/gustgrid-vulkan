@@ -515,7 +515,10 @@ private:
         volumeSimulator->addKernel("fanUpdate", "src/shaders/compiled/fanaccessupdate.comp.spv", glm::uvec3(8, 8, 8), true);
         volumeSimulator->addKernel("computeDivergence", "src/shaders/compiled/computedivergence.comp.spv", glm::uvec3(8, 8, 8), true);
         volumeSimulator->addKernel("pressureJacobi", "src/shaders/compiled/pressurejacobi.comp.spv", glm::uvec3(8, 8, 8), true);
+        volumeSimulator->addKernel("pressureJacobiSwap", "src/shaders/compiled/pressurejacobi_swap.comp.spv", glm::uvec3(8, 8, 8), true);
         volumeSimulator->addKernel("computeResidual", "src/shaders/compiled/computeresidual.comp.spv", glm::uvec3(8, 8, 8), true);
+        volumeSimulator->addKernel("reduceResidualSum", "src/shaders/compiled/reduce_residual_sum.comp.spv", glm::uvec3(256, 1, 1), true);
+        volumeSimulator->addKernel("reduceResidualSum2", "src/shaders/compiled/reduce_residual_sum2.comp.spv", glm::uvec3(256, 1, 1), true);
         volumeSimulator->addKernel("subtractPressureGradient", "src/shaders/compiled/subtractpressuregradient.comp.spv", glm::uvec3(8, 8, 8), true);
         volumeSimulator->addKernel("enforceBoundaryConditions", "src/shaders/compiled/enforceboundaryconditions.comp.spv", glm::uvec3(8, 8, 8), true);
         if(g_useCASAdvection)
@@ -752,19 +755,17 @@ private:
         volumeSimulator->copyVelocityTempCPU(totalCells);
         VkSemaphore divergenceSemaphore = volumeSimulator->dispatchKernel("computeDivergence", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
         volumeSimulator->clearPressureCPU(totalCells);
-        for(int iter = 0; iter < maxPressureIterations; iter++){
-            VkSemaphore jacobiSemaphore = volumeSimulator->dispatchKernel("pressureJacobi", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
-            if(iter % 4 == 3 || iter == maxPressureIterations - 1){
-                VkSemaphore residualSemaphore = volumeSimulator->dispatchKernel("computeResidual", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);
-                float residualSum = volumeSimulator->computeResidualSum();
-                uint32_t totalCells = gridSizeX * gridSizeY * gridSizeZ;
-                float avgResidual = residualSum / totalCells;
-                if(avgResidual < pressureTolerance){
-                    volumeSimulator->swapPressureBuffers();
-                    break;
-                }
+        int remaining = maxPressureIterations;
+        while(remaining > 0){
+            uint32_t chunk = static_cast<uint32_t>(std::min(remaining, 8));
+            bool doResidual = (remaining <= 8);
+            volumeSimulator->dispatchJacobiIterations(chunk, glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants, doResidual);
+            if(doResidual){
+                float sumResidual = volumeSimulator->computeResidualSumGPU(totalCells);
+                float avgResidual = sumResidual / static_cast<float>(totalCells);
+                if(avgResidual < pressureTolerance) break;
             }
-            volumeSimulator->swapPressureBuffers();
+            remaining -= chunk;
         }
         volumeSimulator->copyFinalPressureToMain();
         VkSemaphore gradientSemaphore = volumeSimulator->dispatchKernel("subtractPressureGradient", glm::uvec3(gridSizeX, gridSizeY, gridSizeZ), currentPushConstants);

@@ -47,6 +47,7 @@ public:
         alignas(4) uint32_t numFans;
         alignas(4) int displayPressure;
         alignas(4) uint32_t padding;
+        alignas(4) float relaxation;
     };
     VolumeSimulator(VkDevice device, VkCommandPool commandPool, VkQueue computeQueue, VkPhysicalDevice physicalDevice);
     ~VolumeSimulator();
@@ -63,9 +64,9 @@ public:
     void initSimulation(int numCells);
     void updateDescriptorSetsWithBuffers();
     void setFanParams(const glm::vec4* positions, const glm::vec4* directions, uint32_t count);
-    void swapPressureBuffers();
     void copyFinalPressureToMain();
-    float computeResidualSum();
+    void dispatchJacobiIterations(uint32_t iterations, glm::uvec3 gridSize, const ComputePushConstants &pushConstants, bool finalResidualPass = false);
+    float computeResidualSumGPU(uint32_t numCells);
     void setCurrentFrame(uint32_t frame) { currentFrame = frame; }
     void cleanupSimulation();
     static std::vector<char> readFile(const std::string &filename);

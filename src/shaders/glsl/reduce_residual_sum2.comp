@@ -1,0 +1,24 @@
+#version 450
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(binding = 2, std430) readonly buffer PressureOutBuffer { float pressureOut[]; };
+layout(binding = 3, std430) writeonly buffer ResidualBuffer { float residual[]; };
+layout(push_constant) uniform PushConstants {
+    vec4 gridSize; vec4 worldMin; vec4 worldMax; vec4 cellSize;
+    float deltaTime; uint numFans; int displayPressure; uint padding;
+    float relaxation;
+} pc;
+shared float sdata[256];
+void main(){
+    uint tid = gl_LocalInvocationID.x;
+    uint base = gl_WorkGroupID.x * 256u;
+    uint count = uint(max(pc.relaxation, 0.0));
+    uint idx = base + tid;
+    float val = (idx < count) ? pressureOut[idx] : 0.0;
+    sdata[tid] = val;
+    barrier();
+    for(uint s = 128u; s > 0u; s >>= 1u){
+        if(tid < s){ sdata[tid] += sdata[tid + s]; }
+        barrier();
+    }
+    if(tid == 0u){ residual[gl_WorkGroupID.x] = sdata[0]; }
+}
